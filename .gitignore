@@ -1,0 +1,30 @@
+.superpowers/
+.worktrees/
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Local planning/docs and agent state
+docs/
+
+# HScanner local state and generated data
+.hscanner/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.csv
+*.html
+*.json
+*.log
+
+# Sensitive local config and key material
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr

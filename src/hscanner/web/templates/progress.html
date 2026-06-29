@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}Scanning… — HScanner{% endblock %}
+{% block content %}
+<section class="hero" data-job-id="{{ job_id }}">
+  <p class="eyebrow">Live scan</p>
+  <h1>Scanning <em>in progress</em>…</h1>
+
+  <div class="card console">
+    <div class="progress"><div class="bar" id="bar" style="width:0%"></div></div>
+    <div class="tiles" id="tiles">
+      <div class="tile"><span class="v" id="t-processed">0</span><span class="k">processed</span></div>
+      <div class="tile"><span class="v" id="t-scanned">0</span><span class="k">scanned</span></div>
+      <div class="tile alert"><span class="v" id="t-infected">0</span><span class="k">infected</span></div>
+      <div class="tile alert"><span class="v" id="t-needs-attention">0</span><span class="k">needs attention</span></div>
+      <div class="tile"><span class="v" id="t-uploaded">0</span><span class="k">uploaded</span></div>
+      <div class="tile"><span class="v" id="t-skipped">0</span><span class="k">skipped</span></div>
+      <div class="tile"><span class="v" id="t-errors">0</span><span class="k">errors</span></div>
+    </div>
+    <div class="banner info" id="cost-banner" hidden>
+      <span class="dot" aria-hidden="true"></span>
+      <div id="cost-text"></div>
+    </div>
+    <p id="current" class="hint"></p>
+    <p id="eta" class="hint"></p>
+    <p id="notice" class="hint" hidden></p>
+    <div class="btn-row">
+      <button class="btn" id="pause">Pause</button>
+      <button class="btn" id="resume" hidden>Resume</button>
+      <button class="btn" id="cancel">Cancel</button>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  const jobId = document.querySelector('.hero').dataset.jobId;
+  const engineDisplayNames = {{ engine_display_names | tojson }};
+  const bar = document.getElementById('bar');
+  const tProcessed = document.getElementById('t-processed');
+  const tScanned = document.getElementById('t-scanned');
+  const tInfected = document.getElementById('t-infected');
+  const tNeedsAttention = document.getElementById('t-needs-attention');
+  const tUploaded = document.getElementById('t-uploaded');
+  const tSkipped = document.getElementById('t-skipped');
+  const tErrors = document.getElementById('t-errors');
+  const current = document.getElementById('current');
+  const eta = document.getElementById('eta');
+  const notice = document.getElementById('notice');
+  const pauseBtn = document.getElementById('pause');
+  const resumeBtn = document.getElementById('resume');
+  const cancelBtn = document.getElementById('cancel');
+  let total = 0, processed = 0;
+  let lastStatus = 'running';
+
+  function formatEta(seconds) {
+    if (seconds < 60) return Math.ceil(seconds) + 's';
+    if (seconds < 3600) return Math.ceil(seconds / 60) + ' min';
+    return (Math.ceil(seconds / 360) / 10).toFixed(1) + ' hr';
+  }
+
+  function showNotice(msg) {
+    notice.textContent = msg;
+    notice.hidden = false;
+  }
+
+  function clearNotice() {
+    notice.hidden = true;
+    notice.textContent = '';
+  }
+
+  function applyStatus(status) {
+    if (!status) return;
+    lastStatus = status;
+    if (status === 'running') {
+      pauseBtn.hidden = false;
+      resumeBtn.hidden = true;
+      cancelBtn.disabled = false;
+      cancelBtn.hidden = false;
+    } else if (status === 'paused') {
+      pauseBtn.hidden = true;
+      resumeBtn.hidden = false;
+      cancelBtn.disabled = false;
+      cancelBtn.hidden = false;
+    }
+  }
+
+  function disableControls() {
+    pauseBtn.hidden = true;
+    resumeBtn.hidden = true;
+    cancelBtn.disabled = true;
+    cancelBtn.hidden = true;
+  }
+
+  let gotMessage = false;
+  const es = new EventSource('/scan/{{ job_id }}/events');
+  es.onmessage = function (e) {
+    gotMessage = true;
+    const ev = JSON.parse(e.data);
+    clearNotice();
+
+    // Update counts from the merged snapshot (every message carries these).
+    if (ev.total != null) total = ev.total;
+    if (ev.processed != null) processed = ev.processed;
+    if (total > 0) {
+      bar.style.width = Math.round((processed / total) * 100) + '%';
+    }
+    tProcessed.textContent = total > 0 ? (processed + ' / ' + total) : (processed || '0');
+    if (ev.scanned != null) tScanned.textContent = ev.scanned;
+    if (ev.infected != null) tInfected.textContent = ev.infected;
+    if (ev.needs_attention != null) tNeedsAttention.textContent = ev.needs_attention;
+    if (ev.uploaded != null) tUploaded.textContent = ev.uploaded;
+    if (ev.skipped != null) tSkipped.textContent = ev.skipped;
+    if (ev.errors != null) tErrors.textContent = ev.errors;
+
+    // Pre-scan cost estimate banner.
+    if (ev.online_pending !== undefined) {
+      const banner = document.getElementById('cost-banner');
+      const text = document.getElementById('cost-text');
+      const engineName = ev.current_engine_id == null
+        ? null
+        : (engineDisplayNames[ev.current_engine_id] || ev.current_engine_id);
+      const engineSuffix = engineName == null ? '' : ' (' + engineName + ')';
+      text.innerHTML = '<strong>Checking ' + ev.online_pending +
+        ' file(s) on the scan engine' + engineSuffix + '</strong> · ' + ev.bypassed +
+        ' low-risk bypassed — Cancel anytime.';
+      banner.hidden = false;
+    }
+
+    // ETA.
+    if (ev.eta_seconds != null) {
+      eta.textContent = 'Estimated time remaining: ~' + formatEta(ev.eta_seconds) + ' (approx.)';
+    } else if (total > 0 && processed < total) {
+      eta.textContent = 'Estimating…';
+    }
+
+    // Reconnect replay: update current file/stage from snapshot on EVERY message.
+    if (ev.current_path != null) {
+      current.textContent = 'Current: ' + ev.current_path;
+      if (ev.current_stage != null) {
+        const label = ev.current_stage === 'waiting_rate_limit' ? 'waiting on rate limit' : ev.current_stage;
+        current.textContent = 'Current: ' + ev.current_path + ' — ' + label;
+      }
+    }
+
+    // Sync control buttons to job status on every message.
+    if (ev.status) applyStatus(ev.status);
+
+    // Terminal event handling.
+    if (ev.type === 'scan_finished') {
+      es.close();
+      disableControls();
+      if (ev.error || ev.status === 'error') {
+        // Show credential-safe server error message; never navigate.
+        showNotice(ev.error || 'Scan failed.');
+      } else if (ev.report_id) {
+        window.location = '/reports/' + ev.report_id;
+      } else {
+        showNotice('Scan completed — no report available.');
+      }
+    }
+  };
+
+  es.onerror = function () {
+    if (es.readyState === EventSource.CLOSED || !gotMessage) {
+      es.close();
+      disableControls();
+      showNotice('This scan is no longer available — it may have finished or expired.');
+    }
+  };
+
+  async function post(action) {
+    try {
+      const response = await fetch('/scan/' + jobId + '/' + action, { method: 'POST' });
+      if (!response.ok) {
+        showNotice("Couldn’t " + action + " — try again");
+        applyStatus(lastStatus);
+        return;
+      }
+      const data = await response.json();
+      if (data.status) applyStatus(data.status);
+    } catch (_err) {
+      showNotice("Couldn’t " + action + " — try again");
+      applyStatus(lastStatus);
+    }
+  }
+
+  pauseBtn.onclick = function () {
+    pauseBtn.hidden = true; resumeBtn.hidden = false;
+    current.textContent = 'Pausing after current step…';
+    post('pause');
+  };
+  resumeBtn.onclick = function () {
+    resumeBtn.hidden = true; pauseBtn.hidden = false;
+    post('resume');
+  };
+  cancelBtn.onclick = function () {
+    current.textContent = 'Cancelling after current step…';
+    post('cancel');
+  };
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,57 @@
+version: 1
+
+traversal:
+  include_hidden: true
+  follow_symlinks: false
+  max_depth: null
+  hardlink_dedupe: false
+
+size_limits:
+  normal_upload_max_mb: 32
+  large_upload_soft_block_mb: 200
+  absolute_upload_block_mb: 650
+
+quota:
+  preset: public
+  requests_per_minute: 4
+  per_scan_request_budget: null
+  daily_request_budget: null
+  monthly_request_budget: null
+  polling_timeout_seconds: 600
+  cache_ttl_days: 7
+
+matching:
+  case_sensitive: true
+  default_bucket: hash_only
+
+buckets:
+  sensitive:
+    extensions: []
+    filename_patterns: [".env", "*.pem", "*.key", "*secret*", "*secrets*"]
+    reason: "sensitive"
+
+  skipped:
+    extensions: [".txt", ".md", ".log"]
+    filename_patterns: []
+    reason: "low risk"
+
+  hash_only:
+    extensions:
+      [".pdf", ".docx", ".xlsx", ".mp4", ".mkv", ".png", ".jpg", ".jpeg", ".ogg", ".wav", ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc"]
+    reason: "hash-only by default"
+
+  upload_candidate:
+    extensions:
+      [".sh", ".bash", ".zsh", ".py", ".pyc", ".pyd", ".rpyc", ".pl", ".rb", ".js", ".jar",
+       ".so", ".bin", ".appimage", ".deb", ".rpm", ".run", ".exe", ".dll", ".msi",
+       ".scr", ".bat", ".cmd", ".ps1", ".com", ".vbs", ".wsf", ".lnk"]
+    executable_bit: true
+    elf_magic: true
+    shebang: true
+    reason: "executable, package, or script"
+
+  suspicious_upload_blocked:
+    rules:
+      - extension: ".pak"
+        executable_markers: true
+        reason: "large game bundle with executable markers"

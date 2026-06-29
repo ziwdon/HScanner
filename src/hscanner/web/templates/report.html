@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}Triage report — HScanner{% endblock %}
+
+{% block content %}
+<div class="report-head-row rise">
+  <div class="report-head-copy">
+    <p class="eyebrow">Triage report</p>
+    <div class="path">{{ view.folder }}</div>
+    <div class="sub">{{ view.total }} files inventoried · {{ view.scanned }} scanned with {{ view.engine_name }}</div>
+    {% if view.engine_breakdown %}
+    <div class="sub">Engine breakdown · {% for engine_id, count in view.engine_breakdown.items() %}{{ engine_id }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</div>
+    {% endif %}
+  </div>
+  <details class="export-menu">
+    <summary>Export report <span aria-hidden="true">▾</span></summary>
+    <div class="export-options">
+      <a href="/reports/{{ view.report_id }}.json"><strong>JSON</strong><span>Complete structured data</span></a>
+      <a href="/reports/{{ view.report_id }}.html"><strong>HTML</strong><span>Self-contained offline report</span></a>
+      <a href="/reports/{{ view.report_id }}.csv"><strong>CSV</strong><span>One row per inventoried file</span></a>
+    </div>
+  </details>
+</div>
+
+{% if not view.online %}
+<div class="banner info rise">
+  <span class="dot" aria-hidden="true"></span>
+  <div><strong>Local-only inventory</strong>
+    <p>No files were checked against a scan engine. Add an API key in <a href="/settings">Settings</a> to obtain engine results.</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="tiles rise-2">
+  {% for tile in view.tiles %}
+  <div class="card tile {% if tile.alert %}alert{% endif %}" data-summary-key="{{ tile.k | lower | replace(' ', '_') }}">
+    <span class="v">{{ tile.v }}</span><span class="k">{{ tile.k }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+<section class="upload-progress card" id="upload-progress" hidden aria-live="polite">
+  <div class="upload-progress-head">
+    <strong id="upload-progress-title">Upload scan progress</strong>
+    <span id="upload-progress-count">0 / 0</span>
+  </div>
+  <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="bar" id="upload-progress-bar" style="width: 0%"></div>
+  </div>
+  <p id="upload-progress-detail">Preparing upload queue</p>
+  <button class="btn btn-cancel-upload" id="cancel-upload" type="button" hidden>Cancel</button>
+</section>
+
+{% if view.sections %}
+<div class="report-layout">
+  <nav class="report-nav" aria-label="Report sections">
+    {% for item in view.navigation %}
+    <a href="#{{ item.id }}"><span>{{ item.title }}</span><b>{{ item.total }}</b></a>
+    {% endfor %}
+  </nav>
+  <div class="report-sections">
+    {% for section in view.sections %}
+    <section class="section" id="{{ section.id }}">
+      <div class="section-head">
+        <span class="bar sevbox {{ section.sev }}"></span>
+        <h2>{{ section.title }}</h2>
+        <span class="count">{{ section.total }}</span>
+      </div>
+      {% if section.has_batch_action %}
+      <button class="btn btn-scan-all" id="scan-all" type="button">Upload and scan all unverified</button>
+      {% endif %}
+      {% for f in section.files %}{% include "_file_card.html" %}{% endfor %}
+      {% if section.hidden %}
+      <p class="note">Showing the first {{ section.files | length }} of {{ section.total }}. Use JSON or CSV for the complete list.</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="card empty rise-3"><div class="mark" aria-hidden="true">✓</div>
+  <h2>No files to report</h2><p>The inventory did not produce any file outcomes.</p>
+</div>
+{% endif %}
+
+<script>
+const REPORT_ID = {{ view.report_id | tojson }};
+const SECTION_META = {{ view.section_meta | tojson }};
+const uploadProgress = document.getElementById('upload-progress');
+const uploadProgressTitle = document.getElementById('upload-progress-title');
+const uploadProgressCount = document.getElementById('upload-progress-count');
+const uploadProgressDetail = document.getElementById('upload-progress-detail');
+const uploadProgressMeter = uploadProgress.querySelector('.progress');
+const uploadProgressBar = document.getElementById('upload-progress-bar');
+const cancelUpload = document.getElementById('cancel-upload');
+let batchSource = null;
+let activeBatchJobId = null;
+let batchCancelRequested = false;
+let batchTerminalReceived = false;
+let lastBatchDone = 0;
+let lastBatchTotal = 0;
+
+function sectionMeta(outcome) {
+  return SECTION_META[outcome] || {outcome, id: outcome, title: outcome, sev: 'sev-unknown'};
+}
+
+function setUploadProgress(done, total, detail, title = 'Upload scan progress') {
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+  uploadProgress.hidden = false;
+  uploadProgressTitle.textContent = title;
+  uploadProgressCount.textContent = `${done} / ${total}`;
+  uploadProgressDetail.textContent = detail;
+  uploadProgressMeter.setAttribute('aria-valuenow', String(percent));
+  uploadProgressBar.style.width = `${percent}%`;
+}
+
+function updateSummaryTiles(summary) {
+  if (!summary) return;
+  Object.entries(summary).forEach(([key, value]) => {
+    const tile = document.querySelector(`.tile[data-summary-key="${key}"] .v`);
+    if (tile) tile.textContent = value;
+  });
+}
+
+function updateSectionCount(section) {
+  if (!section) return;
+  const count = section.querySelector(':scope > .section-head .count');
+  const total = section.querySelectorAll(':scope > details.file').length;
+  if (count) count.textContent = total;
+  const navLink = document.querySelector(`.report-nav a[href="#${section.id}"] b`);
+  if (navLink) navLink.textContent = total;
+}
+
+function ensureSection(sectionData) {
+  const meta = sectionData || sectionMeta('needs_attention');
+  let section = document.getElementById(meta.id);
+  if (section) return section;
+  const sections = document.querySelector('.report-sections');
+  const nav = document.querySelector('.report-nav');
+  if (!sections || !nav) return null;
+
+  const navLink = document.createElement('a');
+  navLink.href = `#${meta.id}`;
+  navLink.innerHTML = `<span>${meta.title}</span><b>0</b>`;
+  nav.appendChild(navLink);
+
+  section = document.createElement('section');
+  section.className = 'section';
+  section.id = meta.id;
+  section.dataset.outcome = meta.outcome;
+  section.innerHTML = `
+    <div class="section-head">
+      <span class="bar sevbox ${meta.sev}"></span>
+      <h2>${meta.title}</h2>
+      <span class="count">0</span>
+    </div>
+  `;
+  if (['needs_attention', 'error'].includes(meta.outcome)) {
+    const button = document.createElement('button');
+    button.className = 'btn btn-scan-all';
+    button.type = 'button';
+    button.textContent = 'Upload and scan all unverified';
+    if (!document.getElementById('scan-all')) button.id = 'scan-all';
+    section.appendChild(button);
+  }
+  sections.appendChild(section);
+  return section;
+}
+
+function applyFileUpdate(data) {
+  if (!data.file || !data.file_card_html) return;
+  const index = data.file.index;
+  const existing = document.querySelector(`details.file[data-index="${index}"]`);
+  const previousSection = existing ? existing.closest('.section') : null;
+  if (existing) existing.remove();
+
+  const destination = ensureSection(data.section || sectionMeta(data.file.outcome));
+  if (!destination) return;
+  const template = document.createElement('template');
+  template.innerHTML = data.file_card_html.trim();
+  const card = template.content.firstElementChild;
+  if (!card) return;
+  destination.appendChild(card);
+  updateSectionCount(previousSection);
+  updateSectionCount(destination);
+}
+
+function applyBatchEvent(data) {
+  const done = data.processed || 0;
+  const total = data.total || 0;
+  const state = data.state || 'running';
+  const current = data.current_path ? ` · ${data.current_path}` : '';
+  const terminal = ['done', 'cancelled', 'error'].includes(state);
+  lastBatchDone = done;
+  lastBatchTotal = total;
+  if (state === 'cancelling') batchCancelRequested = true;
+  const detail = batchCancelRequested && !terminal
+    ? 'Cancelling after the current file finishes…'
+    : `${state.replaceAll('_', ' ')}${current}`;
+  setUploadProgress(done, total, detail, 'Upload scan progress');
+  updateSummaryTiles(data.summary);
+  applyFileUpdate(data);
+  cancelUpload.hidden = terminal;
+  cancelUpload.disabled = state === 'cancelling';
+  if (state === 'done') {
+    setUploadProgress(done, total, 'Batch complete. Refreshing report…', 'Upload scan progress');
+    window.setTimeout(() => location.reload(), 500);
+  } else if (state === 'cancelled') {
+    setUploadProgress(done, total, 'Cancelled. Remaining unresolved files can be scanned later.', 'Upload scan progress');
+  }
+}
+
+function connectBatch(jobId) {
+  activeBatchJobId = jobId;
+  batchTerminalReceived = false;
+  if (batchSource) batchSource.close();
+  batchSource = new EventSource(`/reports/${REPORT_ID}/scan-unverified/${jobId}/events`);
+  batchSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    applyBatchEvent(data);
+    if (['done', 'cancelled', 'error'].includes(data.state)) {
+      batchTerminalReceived = true;
+      batchSource.close();
+      batchSource = null;
+      activeBatchJobId = null;
+      batchCancelRequested = false;
+      setScanAllDisabled(false);
+    }
+  };
+  batchSource.onerror = () => {
+    if (batchTerminalReceived) return;
+    if (batchCancelRequested) {
+      setUploadProgress(
+        lastBatchDone,
+        lastBatchTotal,
+        'Cancellation requested. Waiting for server confirmation…',
+      );
+    } else {
+      setUploadProgress(0, 0, 'Batch progress connection lost');
+    }
+    batchSource.close();
+    batchSource = null;
+    setScanAllDisabled(false);
+  };
+}
+
+async function reconnectActiveBatch() {
+  const response = await fetch(`/reports/${REPORT_ID}/scan-unverified/active`);
+  if (!response.ok) return;
+  const body = await responseJson(response);
+  if (body.active && body.job_id) {
+    setScanAllDisabled(true);
+    applyBatchEvent(body.last || {state: 'running', processed: 0, total: 0});
+    connectBatch(body.job_id);
+  }
+}
+
+async function responseJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+async function scanFile(index, statusEl, hooks = {}) {
+  if (statusEl) statusEl.textContent = 'queued…';
+  if (hooks.onState) hooks.onState('queued');
+  try {
+    const post = await fetch(`/reports/${REPORT_ID}/files/${index}/scan`, {method: 'POST'});
+    if (!post.ok) {
+      const body = await responseJson(post);
+      const reason = body.reason || body.error || post.status;
+      if (statusEl) statusEl.textContent = 'Cannot scan: ' + reason;
+      if (hooks.onError) hooks.onError(reason);
+      return 'error';
+    }
+    return await new Promise((resolve) => {
+      const es = new EventSource(`/reports/${REPORT_ID}/files/${index}/scan/events`);
+      es.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.state === 'done') {
+          if (statusEl) statusEl.textContent = 'done - ' + (data.outcome || '').replace('_', ' ');
+          applyFileUpdate(data);
+          es.close(); resolve('done');
+        } else if (data.state === 'error') {
+          const reason = data.error || 'Scan failed';
+          if (statusEl) statusEl.textContent = reason;
+          es.close(); resolve('error');
+        } else {
+          if (statusEl) statusEl.textContent = data.state + '…';
+          if (hooks.onState) hooks.onState(data.state);
+        }
+      };
+      es.onerror = () => {
+        if (statusEl) statusEl.textContent = 'connection lost';
+        es.close();
+        if (hooks.onError) hooks.onError('connection lost');
+        resolve('error');
+      };
+    });
+  } catch {
+    if (statusEl) statusEl.textContent = 'connection failed';
+    if (hooks.onError) hooks.onError('connection failed');
+    return 'error';
+  }
+}
+const scanAll = document.getElementById('scan-all');
+function setScanAllDisabled(disabled) {
+  document.querySelectorAll('.btn-scan-all').forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('.btn-scan');
+  if (!button) return;
+  const index = button.dataset.index;
+  const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
+  button.disabled = true;
+  setUploadProgress(0, 1, `Uploading file ${index}`, 'Single file upload');
+  scanFile(index, statusEl, {
+    onState: (state) => setUploadProgress(0, 1, `File ${index}: ${state}`),
+    onError: (reason) => setUploadProgress(0, 1, `File ${index}: ${reason}`),
+  }).then((result) => {
+    if (result === 'done') {
+      setUploadProgress(1, 1, `File ${index} completed`, 'Single file upload');
+    } else {
+      button.disabled = false;
+    }
+  });
+});
+
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('.btn-scan-all');
+  if (!button) return;
+  setScanAllDisabled(true);
+  setUploadProgress(0, 0, 'Preparing upload queue');
+  let response;
+  try {
+    response = await fetch(`/reports/${REPORT_ID}/scan-unverified`, {method: 'POST'});
+  } catch {
+    setUploadProgress(0, 0, 'Connection failed while preparing upload queue');
+    setScanAllDisabled(false);
+    return;
+  }
+  const body = await responseJson(response);
+  if (!response.ok) {
+    setUploadProgress(0, 0, body.error || body.reason || `Request failed: ${response.status}`);
+    setScanAllDisabled(false);
+    return;
+  }
+  if (!body.job_id) {
+    setUploadProgress(0, 0, 'No upload-eligible unverified files remain');
+    setScanAllDisabled(false);
+    return;
+  }
+  setUploadProgress(0, (body.indices || []).length, 'Starting upload queue');
+  connectBatch(body.job_id);
+});
+cancelUpload.addEventListener('click', async () => {
+  if (!activeBatchJobId) return;
+  batchCancelRequested = true;
+  cancelUpload.disabled = true;
+  setUploadProgress(lastBatchDone, lastBatchTotal, 'Cancelling after the current file finishes…');
+  try {
+    const response = await fetch(`/reports/${REPORT_ID}/scan-unverified/${activeBatchJobId}/cancel`, {method: 'POST'});
+    if (!response.ok) {
+      const body = await responseJson(response);
+      batchCancelRequested = false;
+      cancelUpload.disabled = false;
+      setUploadProgress(lastBatchDone, lastBatchTotal, body.error || `Cancel failed: ${response.status}`);
+    }
+  } catch {
+    batchCancelRequested = false;
+    cancelUpload.disabled = false;
+    setUploadProgress(lastBatchDone, lastBatchTotal, 'Connection failed while requesting cancellation');
+  }
+});
+reconnectActiveBatch();
+</script>
+{% endblock %}
