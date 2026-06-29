@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}History — HScanner{% endblock %}
+
+{% block content %}
+<div class="report-head rise">
+  <p class="eyebrow">Recent activity</p>
+  <div class="path">Scan history</div>
+  <div class="sub">Reports retained locally for quick access while they remain in HScanner storage.</div>
+</div>
+
+{% if reports %}
+<div class="history-list rise-2">
+  {% for report in reports %}
+  <a class="history-item card" href="/reports/{{ report.report_id }}">
+    <div class="history-main">
+      <span class="history-time">{{ report.generated_at }}</span>
+      <strong>{{ report.root }}</strong>
+      <span>{{ report.engine_name }} · {{ report.status }}</span>
+    </div>
+    <div class="history-counts">
+      <span>{{ report.summary.inventoried }} files</span>
+      <span {% if report.summary.infected %}class="alert"{% endif %}>{{ report.summary.infected }} infected</span>
+      <span {% if report.summary.needs_attention %}class="alert"{% endif %}>{{ report.summary.needs_attention }} needs attention</span>
+      <span>{{ report.summary.no_detections }} no detections</span>
+      <span>{{ report.summary.errors }} errors</span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty rise-2">
+  <div class="mark" aria-hidden="true">↺</div>
+  <h2>No stored reports</h2>
+  <p>Completed reports will appear here while they remain in local storage.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Settings — HScanner{% endblock %}
+{% block content %}
+<div class="stack">
+  <div class="rise">
+    <p class="eyebrow">Settings</p>
+    <h1 style="font-family: var(--ff-display); font-weight: 600; font-size: 28px; margin: 8px 0 0">
+      Engine connections</h1>
+  </div>
+
+  {% for eng in engine_list %}
+  <div class="card card-pad rise-2">
+    <div class="card-head">
+      <h2>{{ eng.name }} API key</h2>
+      {% if eng.has_key %}
+      <span class="status online"><span class="dot" aria-hidden="true"></span>Key saved</span>
+      {% else %}
+      <span class="status"><span class="dot" aria-hidden="true"></span>No key saved</span>
+      {% endif %}
+    </div>
+
+    <form method="post" action="/settings/api-key" style="margin-top: 18px">
+      <input type="hidden" name="engine" value="{{ eng.id }}">
+      <div class="form-row">
+        <label class="label" for="api_key_{{ eng.id }}">{% if eng.has_key %}Replace key{% else %}Save your key{% endif %}</label>
+        <input class="field" id="api_key_{{ eng.id }}" name="api_key" type="password" required
+               placeholder="paste your {{ eng.name }} API key" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="btn-row"><button class="btn btn-primary" type="submit">Save key</button></div>
+    </form>
+    <p class="note lock" style="margin-top: 16px">Stored in your Linux keyring — never written to
+      files, reports, logs, or this page.</p>
+
+    {% if eng.has_key %}
+    <div style="margin-top: 16px">
+      <div class="card-head"><h2>Remove key</h2></div>
+      <p class="note">Forget the saved key. Scans fall back to local-only until you add one again.</p>
+      <form method="post" action="/settings/api-key/clear" style="margin-top: 16px">
+        <input type="hidden" name="engine" value="{{ eng.id }}">
+        <button class="btn" type="submit">Clear saved key</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

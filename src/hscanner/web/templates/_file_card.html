@@ -1,0 +1,44 @@
+<details class="file sevbox {{ f.sev }}" data-index="{{ f.index }}" data-outcome="{{ f.outcome_key }}">
+  <summary>
+    <span class="fname">{% if f.dir %}<span class="dir">{{ f.dir }}/</span>{% endif %}{{ f.name }}</span>
+    {% if f.ratio %}<span class="ratio"><b>{{ f.flagged }}</b> / {{ f.total_engines }}</span>{% endif %}
+    <span class="chip sevbox {{ f.sev }}">{{ f.outcome }}</span>
+    <span class="caret" aria-hidden="true">▸</span>
+  </summary>
+  <div class="detail">
+    <dl class="kv">
+      <dt>Outcome</dt><dd>{{ f.outcome }}</dd>
+      <dt>Reason</dt><dd class="body-value">{{ f.outcome_reason }}</dd>
+      <dt>Scan engine</dt><dd>{{ f.scan_engine }}</dd>
+      <dt>Hash lookup</dt><dd>{{ f.lookup_status }}</dd>
+      <dt>Upload</dt><dd>{{ f.upload_status }}</dd>
+      <dt>Size</dt><dd>{{ f.size }} bytes</dd>
+      <dt>SHA-256</dt><dd>{{ f.sha256 or "—" }}</dd>
+      <dt>Classification</dt><dd>{{ f.classification_bucket }}</dd>
+      <dt>Classification reason</dt><dd class="body-value">{{ f.classification_reason }}</dd>
+      {% if f.counts %}<dt>Detection counts</dt><dd>{{ f.counts }}</dd>{% endif %}
+      {% if f.last_analysis_at %}<dt>Last analysis</dt><dd>{{ f.last_analysis_at }}</dd>{% endif %}
+      {% if f.errors %}<dt>Errors</dt><dd>{{ f.errors | join(", ") }}</dd>{% endif %}
+      <dt>JSON reference</dt><dd>{{ f.json_reference }}</dd>
+    </dl>
+    {% if f.detections %}
+    <div><div class="note detail-label">Flagged by</div><div class="engines">
+      {% for engine, category, name in f.detections %}
+      <span class="engine">{{ engine }}: {{ name }} ({{ category }})</span>
+      {% endfor %}
+    </div></div>
+    {% endif %}
+    {% if f.permalink %}
+    <a class="permalink" href="{{ f.permalink }}" target="_blank" rel="noopener">View full report ↗</a>
+    {% endif %}
+    {% if f.badges %}
+    <div class="badges">{% for badge in f.badges %}<span class="badge">{{ badge }}</span>{% endfor %}</div>
+    {% endif %}
+    {% if f.can_scan %}
+    <button class="btn btn-scan" data-index="{{ f.index }}" type="button">Scan this file</button>
+    <span class="scan-status" data-index="{{ f.index }}"></span>
+    {% elif f.too_large %}
+    <span class="warn">Too large to upload (limit {{ f.size_limit_mb }} MB)</span>
+    {% endif %}
+  </div>
+</details>

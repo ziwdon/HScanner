@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HScanner report — {{ view.folder }}</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1218;--panel:#151d26;--line:#2b3744;--text:#e6edf3;--muted:#91a0ae}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,sans-serif}
+main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}h1,h2,p{margin-top:0}code,.path{font-family:ui-monospace,monospace}.muted,dt{color:var(--muted)}.path{overflow-wrap:anywhere}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:22px 0}.tile,.file{border:1px solid var(--line);border-radius:8px;background:var(--panel)}.tile{padding:14px}.tile b{display:block;font-size:22px}section{margin-top:28px}.file{margin:9px 0}summary{cursor:pointer;padding:13px 15px}.file>summary{display:flex;gap:12px;align-items:center}.file>summary code{flex:1;overflow-wrap:anywhere}.detail{border-top:1px solid var(--line);padding:14px}dl{display:grid;grid-template-columns:150px 1fr;gap:7px 14px}dd{margin:0;overflow-wrap:anywhere}.detections{margin:10px 0 0;padding-left:20px}a{color:#7bc8ff}@media(max-width:600px){dl{grid-template-columns:1fr}dt{margin-top:8px}}
+</style></head><body>
+{% macro file_card(file) %}
+<details class="file"><summary><code>{% if file.dir %}{{ file.dir }}/{% endif %}{{ file.name }}</code><span>{{ file.outcome }}</span>{% if file.ratio %}<span>{{ file.flagged }}/{{ file.total_engines }}</span>{% endif %}</summary>
+<div class="detail"><dl>
+<dt>Outcome</dt><dd>{{ file.outcome }}</dd><dt>Reason</dt><dd>{{ file.outcome_reason }}</dd>
+<dt>Scan engine</dt><dd>{{ file.scan_engine }}</dd><dt>Hash lookup</dt><dd>{{ file.lookup_status }}</dd><dt>Upload</dt><dd>{{ file.upload_status }}</dd>
+<dt>Size</dt><dd>{{ file.size }} bytes</dd><dt>SHA-256</dt><dd><code>{{ file.sha256 or "—" }}</code></dd>
+<dt>Classification</dt><dd>{{ file.classification_bucket }}</dd><dt>Classification reason</dt><dd>{{ file.classification_reason }}</dd>
+{% if file.counts %}<dt>Detection counts</dt><dd>{{ file.counts }}</dd>{% endif %}
+<dt>Errors</dt><dd>{{ file.errors | join(", ") if file.errors else "—" }}</dd><dt>JSON reference</dt><dd><code>{{ file.json_reference }}</code></dd>
+</dl>{% if file.detections %}<ul class="detections">{% for engine, category, name in file.detections %}<li><strong>{{ engine }}</strong>: {{ name }} ({{ category }})</li>{% endfor %}</ul>{% endif %}
+{% if file.permalink %}<p><a href="{{ file.permalink }}" rel="noopener">View full report</a></p>{% endif %}</div></details>
+{% endmacro %}
+<main><header><p class="muted">HSCANNER TRIAGE REPORT</p><h1 class="path">{{ view.folder }}</h1>
+<p class="muted">Generated {{ view.generated_at }} · {{ view.status }} · {{ view.total }} inventoried · {{ view.scanned }} scanned with {{ view.engine_name }}</p>
+{% if view.engine_breakdown %}<p class="muted">Engine breakdown · {% for engine_id, count in view.engine_breakdown.items() %}{{ engine_id }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}</header>
+<div class="tiles">{% for tile in view.tiles %}<div class="tile"><b>{{ tile.v }}</b>{{ tile.k }}</div>{% endfor %}</div>
+{% for section in view.sections %}<section id="{{ section.id }}"><h2>{{ section.title }} ({{ section.total }})</h2>{% for file in section.files %}{{ file_card(file) }}{% endfor %}</section>{% endfor %}
+</main></body></html>
