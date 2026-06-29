@@ -8,8 +8,9 @@ Local, hash-based file triage for Linux that uses online scan engines for analys
 It is not an antivirus.
 
 HScanner inventories a folder, classifies files by a local policy, checks selected
-file hashes with VirusTotal, MetaDefender, or both, and produces an attention-focused
-report. It does not quarantine, delete, clean, or block files.
+file hashes with VirusTotal or MetaDefender, and can use a combined mode to balance
+checks across engines when API limits apply. It produces an attention-focused report
+and does not quarantine, delete, clean, or block files.
 
 ## Quick Start
 
