@@ -1,5 +1,9 @@
 # HScanner
 
+<p align="center">
+  <img src="assets/readme_cover.png" alt="HScanner cover" width="720">
+</p>
+
 Local, hash-based file triage for Linux that uses online scan engines for analysis.
 It is not an antivirus.
 
