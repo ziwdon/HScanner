@@ -32,6 +32,7 @@ async def test_bypass_skips_low_risk_lookup(tmp_path, monkeypatch):
     scan_dir = tmp_path / "scan"
     scan_dir.mkdir()
     (scan_dir / "movie.mp4").write_bytes(b"\x00\x01\x02data")
+    (scan_dir / "scene.rpy").write_text("label start:\n    return\n")
     (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hi\n")
     client = FakeClient()
     cache = EngineCache(open_global_store())
@@ -44,12 +45,16 @@ async def test_bypass_skips_low_risk_lookup(tmp_path, monkeypatch):
     assert by_name["movie.mp4"].lookup_status == LookupStatus.NOT_CHECKED
     assert by_name["movie.mp4"].outcome == ScanOutcome.SKIPPED
     assert by_name["movie.mp4"].outcome_reason == OutcomeReason.LOW_RISK
+    assert by_name["scene.rpy"].engine_state == EngineState.NOT_FOUND
+    assert by_name["scene.rpy"].lookup_status == LookupStatus.NOT_FOUND
+    assert by_name["scene.rpy"].outcome == ScanOutcome.NEEDS_ATTENTION
+    assert by_name["scene.rpy"].outcome_reason == OutcomeReason.ENGINE_NOT_FOUND
     assert by_name["tool.sh"].engine_state == EngineState.NOT_FOUND
     assert by_name["tool.sh"].lookup_status == LookupStatus.NOT_FOUND
     assert by_name["tool.sh"].outcome == ScanOutcome.NEEDS_ATTENTION
     assert by_name["tool.sh"].outcome_reason == OutcomeReason.ENGINE_NOT_FOUND
-    assert len(client.looked_up) == 1  # only the script
-    assert outcome.engine_breakdown == {"virustotal": 1, "not_checked": 1}
+    assert len(client.looked_up) == 2  # script + unrecognized file
+    assert outcome.engine_breakdown == {"virustotal": 2, "not_checked": 1}
 
 
 @pytest.mark.asyncio

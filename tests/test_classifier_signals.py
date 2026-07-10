@@ -18,14 +18,13 @@ def test_file_signals_detects_elf_and_shebang():
     assert file_signals(b"plain text", 0o755)["executable_bit"] is True
 
 
-def test_extensionless_elf_promotes_hash_only_to_priority():
+def test_extensionless_unknown_file_is_priority_before_signal_detection():
     policy = load_default_policy()
     rec = _record("launcher")  # no extension, not executable bit
     base = classify_file(rec, policy)
-    assert base.bucket == ClassificationBucket.HASH_ONLY
+    assert base.bucket == ClassificationBucket.UPLOAD_CANDIDATE
     promoted = reclassify_with_signals(rec, base, b"\x7fELF\x02", policy)
-    assert promoted.bucket == ClassificationBucket.UPLOAD_CANDIDATE
-    assert promoted.upload_eligible is True
+    assert promoted is base
 
 
 def test_oversize_elf_promotes_to_upload_blocked():
