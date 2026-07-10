@@ -38,6 +38,29 @@ def test_oversize_elf_promotes_to_upload_blocked():
     assert promoted.upload_eligible is False
 
 
+def test_pak_with_executable_marker_promotes_to_upload_blocked():
+    policy = load_default_policy()
+    rec = _record("game.pak")
+    base = classify_file(rec, policy)
+    assert base.bucket == ClassificationBucket.HASH_ONLY
+
+    promoted = reclassify_with_signals(rec, base, b"\x7fELF\x02", policy)
+
+    assert promoted.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    assert promoted.upload_eligible is False
+    assert promoted.hash_eligible is True
+
+
+def test_plain_pak_without_executable_marker_stays_hash_only():
+    policy = load_default_policy()
+    rec = _record("game.pak")
+    base = classify_file(rec, policy)
+
+    unchanged = reclassify_with_signals(rec, base, b"plain asset data", policy)
+
+    assert unchanged is base
+
+
 def test_non_hash_only_unchanged():
     policy = load_default_policy()
     rec = _record("x.sh")

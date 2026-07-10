@@ -27,6 +27,29 @@ def test_sensitive_pattern_wins_over_upload_candidate() -> None:
     assert result.skip_reason == OutcomeReason.SENSITIVE
 
 
+def test_sensitive_patterns_are_case_insensitive() -> None:
+    policy = load_default_policy()
+
+    for name in ("Secret.py", "MY_SECRETS.sh", "id_rsa.PEM", "KEYS.KEY"):
+        result = classify_file(record(name, mode=0o100755), policy)
+
+        assert result.bucket == ClassificationBucket.SKIPPED, name
+        assert result.upload_eligible is False, name
+        assert result.hash_eligible is False, name
+        assert result.skip_reason == OutcomeReason.SENSITIVE, name
+
+
+def test_env_suffix_files_are_sensitive() -> None:
+    policy = load_default_policy()
+
+    for name in (".env.local", ".env.production"):
+        result = classify_file(record(name), policy)
+
+        assert result.bucket == ClassificationBucket.SKIPPED, name
+        assert result.hash_eligible is False, name
+        assert result.skip_reason == OutcomeReason.SENSITIVE, name
+
+
 def test_low_value_file_has_low_risk_skip_reason() -> None:
     result = classify_file(record("notes.txt"), load_default_policy())
 

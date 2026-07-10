@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from httpx import ASGITransport, AsyncClient
 
 from hscanner.engines.base import EngineInfo
 from hscanner.report import build_scan_report
+from hscanner.scanner import run_local_scan
+from hscanner.web import app as web_app
 from hscanner.web.app import create_app
 from hscanner.web.report_store import ReportRegistry
 
@@ -14,6 +17,19 @@ from hscanner.web.report_store import ReportRegistry
 def test_homepage_loads() -> None:
     client = TestClient(create_app())
 
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "HScanner" in response.text
+
+
+def test_app_starts_when_persistent_report_store_init_fails(monkeypatch) -> None:
+    def fail_init():
+        raise OSError("reports.db unavailable")
+
+    monkeypatch.setattr(web_app, "PersistentReportStore", fail_init)
+
+    client = TestClient(web_app.create_app())
     response = client.get("/")
 
     assert response.status_code == 200
@@ -118,6 +134,35 @@ def test_scan_nonexistent_folder_returns_400() -> None:
     assert response.status_code == 400
 
 
+def test_scan_file_path_returns_file_specific_message(tmp_path) -> None:
+    fake = FakeKeyring("key")
+    target = tmp_path / "sample.txt"
+    target.write_text("hello", encoding="utf-8")
+    client = TestClient(create_app(keyring_module=fake))
+
+    response = client.post(
+        "/scan",
+        data={"folder": str(target), "upload_eligible": "false"},
+    )
+
+    assert response.status_code == 400
+    assert "is a file, not a folder" in response.text
+
+
+def test_unknown_engine_error_keeps_key_banner_hidden_when_key_exists() -> None:
+    fake = FakeKeyring("key")
+    client = TestClient(create_app(keyring_module=fake))
+
+    response = client.post(
+        "/scan",
+        data={"folder": "/", "engine": "unknown", "upload_eligible": "false"},
+    )
+
+    assert response.status_code == 400
+    assert "Unknown engine" in response.text
+    assert "API key required" not in response.text
+
+
 def test_static_stylesheet_is_served() -> None:
     client = TestClient(create_app())
 
@@ -125,6 +170,26 @@ def test_static_stylesheet_is_served() -> None:
 
     assert response.status_code == 200
     assert "--sev-high" in response.text
+
+
+def test_base_template_does_not_fetch_external_fonts() -> None:
+    response = TestClient(create_app()).get("/")
+
+    assert response.status_code == 200
+    assert "fonts.googleapis.com" not in response.text
+    assert "fonts.gstatic.com" not in response.text
+    assert "/static/app.css?v=8" in response.text
+
+
+def test_export_menu_stacks_above_report_content_below_topbar() -> None:
+    response = TestClient(create_app()).get("/static/app.css")
+
+    assert response.status_code == 200
+    stylesheet = response.text
+    assert ".topbar" in stylesheet and "z-index: 20" in stylesheet
+    assert ".report-head-row" in stylesheet and "z-index:10" in stylesheet
+    assert ".export-menu[open]" in stylesheet and "z-index:15" in stylesheet
+    assert ".export-options" in stylesheet and "z-index:15" in stylesheet
 
 
 def test_scan_without_key_is_gated() -> None:
@@ -162,6 +227,17 @@ class _FakeVTClient:
         return None
 
 
+class _FailingPersistentStore:
+    def put(self, report):
+        raise OSError("reports.db unavailable")
+
+    def get(self, report_id):
+        raise OSError("reports.db unavailable")
+
+    def list_reports(self):
+        raise OSError("reports.db unavailable")
+
+
 async def _scan_and_get_report(app, folder: str) -> tuple:
     """POST /scan, wait for the background job, return (progress_page, report_response)."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -194,6 +270,45 @@ async def test_completed_report_has_export_menu_and_full_detail(tmp_path) -> Non
     assert "severity spectrum" not in response.text
     assert "JSON reference" in response.text
     assert "/reports/" in response.text
+
+
+async def test_completed_scan_keeps_report_when_persistent_write_fails(tmp_path) -> None:
+    script = tmp_path / "tool.sh"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+    registry = ReportRegistry(persistent_store=_FailingPersistentStore())
+    app = create_app(
+        keyring_module=FakeKeyring("key"),
+        engine_factory=_FakeVTClient,
+        report_registry=registry,
+    )
+
+    _, response = await _scan_and_get_report(app, str(tmp_path))
+
+    assert response.status_code == 200
+    assert "Triage report" in response.text
+
+
+async def test_scan_expands_home_and_stores_resolved_root(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    target = home / "Downloads"
+    target.mkdir(parents=True)
+    script = target / "tool.sh"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    app = create_app(keyring_module=FakeKeyring("key"), engine_factory=_FakeVTClient)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        page = await ac.post("/scan", data={"folder": "~/Downloads"})
+        assert page.status_code == 200
+        job_id = re.search(r'data-job-id="([^"]+)"', page.text).group(1)
+        job = app.state.job_manager.get(job_id)
+        await job.task
+
+    report = app.state.report_registry.get(job.report_id)
+    assert report is not None
+    assert report.root == str(target.resolve())
 
 
 async def test_combined_scan_builds_all_engines_and_labels_report(tmp_path) -> None:
@@ -240,6 +355,31 @@ async def test_web_downloads_each_format(tmp_path, suffix, media_type) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith(media_type)
     assert "attachment" in response.headers["content-disposition"]
+
+
+async def test_web_downloads_handle_non_utf8_filename(tmp_path) -> None:
+    bad_path = os.fsencode(tmp_path) + b"/evil\xff.txt"
+    fd = os.open(bad_path, os.O_WRONLY | os.O_CREAT, 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(b"sample")
+    report = build_scan_report(
+        tmp_path,
+        run_local_scan(tmp_path),
+        online=False,
+        upload_consent=False,
+        report_id_factory=lambda: "surrogate-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        html_response = await ac.get("/reports/surrogate-report.html")
+        csv_response = await ac.get("/reports/surrogate-report.csv")
+
+    assert html_response.status_code == 200
+    assert csv_response.status_code == 200
+    assert html_response.content
+    assert csv_response.content
 
 
 def test_unknown_report_download_is_clear_404() -> None:
@@ -294,6 +434,10 @@ async def test_scan_renders_outcome_report_with_navigation(tmp_path) -> None:
     assert 'id="cancel-upload"' in response.text
     assert 'data-summary-key="needs_attention"' in response.text
     assert "const SECTION_META =" in response.text
+    assert "const SECTION_ORDER =" in response.text
+    assert "Pinned to report_view._OUTCOME_ORDER" in response.text
+    assert "insertBefore" in response.text
+    assert "section.hidden = total === 0" in response.text
     assert "function applyFileUpdate" in response.text
     assert "function ensureSection" in response.text
     assert "batchCancelRequested" in response.text

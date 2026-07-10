@@ -92,3 +92,31 @@ async def test_sensitive_file_is_never_uploaded(tmp_path, monkeypatch, spy_facto
 
     assert exc_info.value.reason == "sensitive"
     assert spy.uploaded is False, "upload_file must never be called for a sensitive file"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["Secret.py", "MY_SECRETS.sh", "id_rsa.PEM", "KEYS.KEY", ".env.local", ".env.production"],
+)
+@pytest.mark.parametrize(
+    "spy_factory",
+    [_SpyVTClient, _SpyMDClient],
+    ids=["virustotal", "metadefender"],
+)
+async def test_case_variant_and_env_suffix_secrets_are_never_uploaded(
+    tmp_path, monkeypatch, filename, spy_factory
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / filename).write_text("secret")
+    spy = spy_factory()
+
+    with pytest.raises(SingleFileNotEligible) as exc_info:
+        await scan_single_file(
+            tmp_path,
+            filename,
+            spy,
+            EngineCache(open_global_store(base_dir=tmp_path / "state" / "hscanner")),
+        )
+
+    assert exc_info.value.reason == "sensitive"
+    assert spy.uploaded is False, "upload_file must never be called for a sensitive file"

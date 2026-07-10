@@ -287,7 +287,7 @@ def test_hash_only_not_queried_maps_to_full_inventory() -> None:
     assert result.report_category == ReportCategory.FULL_INVENTORY
 
 
-def test_one_suspicious_detection_maps_to_low() -> None:
+def test_one_suspicious_detection_maps_to_medium() -> None:
     result = classify_report_result(
         make_result(
             ClassificationBucket.HASH_ONLY,
@@ -296,8 +296,21 @@ def test_one_suspicious_detection_maps_to_low() -> None:
         )
     )
 
-    assert result.risk_label == RiskLabel.LOW
-    assert result.report_category == ReportCategory.LOW
+    assert result.outcome == ScanOutcome.INFECTED
+    assert result.risk_label == RiskLabel.MEDIUM
+    assert result.report_category == ReportCategory.MEDIUM
+
+
+def test_low_risk_bypass_maps_to_skipped_legacy_fields() -> None:
+    result = make_result(ClassificationBucket.HASH_ONLY, EngineState.NOT_QUERIED)
+    result.outcome_reason = OutcomeReason.LOW_RISK
+
+    classify_report_result(result)
+
+    assert result.outcome == ScanOutcome.SKIPPED
+    assert result.outcome_reason == OutcomeReason.LOW_RISK
+    assert result.risk_label == RiskLabel.SKIPPED
+    assert result.report_category == ReportCategory.SKIPPED
 
 
 def test_partial_payload_without_assessment_complete_stays_unknown() -> None:

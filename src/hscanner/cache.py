@@ -26,20 +26,26 @@ class EngineCache:
     def get(
         self, engine_id: str, sha256: str, *, include_stale: bool = False
     ) -> "CachedEngineResult | None":
-        row = self.conn.execute(
-            "SELECT engine_id, sha256, fetched_at, last_analysis_at, payload "
-            "FROM engine_cache WHERE engine_id=? AND sha256=?",
-            (engine_id, sha256),
-        ).fetchone()
+        try:
+            row = self.conn.execute(
+                "SELECT engine_id, sha256, fetched_at, last_analysis_at, payload "
+                "FROM engine_cache WHERE engine_id=? AND sha256=?",
+                (engine_id, sha256),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
         if row is None:
             return None
-        result = CachedEngineResult(
-            engine_id=row["engine_id"],
-            sha256=row["sha256"],
-            fetched_at=datetime.fromisoformat(row["fetched_at"]),
-            last_analysis_at=row["last_analysis_at"],
-            report=EngineFileReport.from_json_dict(json.loads(row["payload"])),
-        )
+        try:
+            result = CachedEngineResult(
+                engine_id=row["engine_id"],
+                sha256=row["sha256"],
+                fetched_at=datetime.fromisoformat(row["fetched_at"]),
+                last_analysis_at=row["last_analysis_at"],
+                report=EngineFileReport.from_json_dict(json.loads(row["payload"])),
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
         if include_stale or result.is_fresh(self.ttl_days):
             return result
         return None

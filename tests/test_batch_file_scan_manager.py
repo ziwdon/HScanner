@@ -116,3 +116,22 @@ def test_batch_manager_refuses_when_folder_scan_active():
 
     with pytest.raises(JobBusy):
         manager.enqueue("report-id", [1], lambda job: None)
+
+
+@pytest.mark.asyncio
+async def test_batch_job_replay_history_is_bounded():
+    async def runner(job):
+        for index in range(250):
+            job.emit({"state": "file_done", "processed": index + 1})
+        job.emit({"state": "done", "processed": 250})
+
+    manager = BatchFileScanManager(job_scan_guard=lambda: False)
+    job = manager.enqueue("report-id", list(range(250)), runner)
+    await job.task
+
+    replay = job.replay_events()
+
+    assert len(replay) <= 201
+    assert replay[0]["state"] == "snapshot"
+    assert replay[0]["last"]["state"] == "done"
+    assert replay[-1]["state"] == "done"

@@ -75,6 +75,21 @@ async def test_vanished_file_raises(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_path_escape_raises_clean_single_file_error(tmp_path, monkeypatch):
+    (tmp_path / "outside.sh").write_text("#!/bin/sh\n")
+
+    with pytest.raises(SingleFileNotEligible) as exc:
+        await scan_single_file(
+            tmp_path / "scan",
+            "../outside.sh",
+            FoundClient(),
+            _cache(tmp_path, monkeypatch),
+        )
+
+    assert exc.value.reason == "invalid_path"
+
+
+@pytest.mark.asyncio
 async def test_found_on_relookup_does_not_upload(tmp_path, monkeypatch):
     (tmp_path / "tool.sh").write_text("#!/bin/sh\n")
     res = await scan_single_file(tmp_path, "tool.sh", FoundClient(),

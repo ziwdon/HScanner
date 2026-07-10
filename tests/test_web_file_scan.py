@@ -227,6 +227,32 @@ def test_unknown_report_id_returns_404(tmp_path, monkeypatch):
     assert resp.status_code == 404, resp.text
 
 
+def test_file_scan_index_boundaries_return_clean_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client()
+    report = _seed_report(app, scan_dir)
+
+    for index in (-1, len(report.files)):
+        resp = client.post(f"/reports/{report.report_id}/files/{index}/scan")
+        assert resp.status_code == 404, resp.text
+
+
+def test_file_scan_events_index_boundaries_return_clean_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client()
+    report = _seed_report(app, scan_dir)
+
+    for index in (-1, len(report.files)):
+        resp = client.get(f"/reports/{report.report_id}/files/{index}/scan/events")
+        assert resp.status_code == 404, resp.text
+
+
 def test_scan_unverified_returns_expected_indices(tmp_path, monkeypatch):
     """POST scan-unverified returns eligible Needs attention indices."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -307,6 +333,37 @@ def test_scan_unverified_file_done_events_include_live_row_payload(tmp_path, mon
     assert file_events
     assert file_events[-1]["file"]["outcome"] == "no_detections"
     assert "No detections" in file_events[-1]["file_card_html"]
+
+
+def test_scan_unverified_vanished_same_hash_sibling_counts_as_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("HS_API_KEY_VIRUSTOTAL", raising=False)
+
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    content = "#!/bin/sh\necho same\n"
+    (scan_dir / "a.sh").write_text(content)
+    (scan_dir / "b.sh").write_text(content)
+
+    app, client = _make_app_and_client(vt_factory=lambda engine_id, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    idx_b = _idx(report, "b.sh")
+    (scan_dir / "b.sh").unlink()
+
+    resp = client.post(f"/reports/{report.report_id}/scan-unverified")
+    assert resp.status_code == 202, resp.text
+
+    with client.stream(
+        "GET", f"/reports/{report.report_id}/scan-unverified/{resp.json()['job_id']}/events"
+    ) as stream:
+        events = _parse_sse("".join(stream.iter_text()))
+
+    assert events[-1]["state"] == "done"
+    assert events[-1]["processed"] == events[-1]["total"]
+    error_events = [event for event in events if event.get("state") == "file_error"]
+    assert any(event.get("current_index") == idx_b for event in error_events)
+    updated = app.state.report_registry.get(report.report_id)
+    assert updated.files[idx_b].outcome == "error"
 
 
 def test_scan_unverified_active_endpoint_exposes_running_batch(tmp_path, monkeypatch):

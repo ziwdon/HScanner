@@ -196,6 +196,46 @@ async def test_upload_returns_data_id(httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_upload_missing_data_id_raises_upload_failed(httpx_mock):
+    httpx_mock.add_response(url=f"{_MD}/file", json={"sha256": "abc"})
+    engine = MetaDefenderEngine("k")
+    with tempfile.NamedTemporaryFile() as f:
+        f.write(b"hi")
+        f.flush()
+        with pytest.raises(HScannerError) as exc:
+            await engine.upload_file(Path(f.name))
+    await engine.close()
+    assert exc.value.code == ErrorCode.UPLOAD_FAILED
+    assert "MetaDefender" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_hash_found_non_numeric_total_raises_engine_client_error(httpx_mock):
+    body = _found_body(0, 30)
+    body["scan_results"]["total_avs"] = "n/a"
+    httpx_mock.add_response(url=f"{_MD}/hash/abc", json=body)
+    engine = MetaDefenderEngine("k")
+    with pytest.raises(HScannerError) as exc:
+        await engine.get_file_report("abc")
+    await engine.close()
+    assert exc.value.code == ErrorCode.ENGINE_CLIENT_ERROR
+    assert "MetaDefender" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_hash_found_null_detection_code_raises_engine_client_error(httpx_mock):
+    body = _found_body(1, 30)
+    body["scan_results"]["scan_details"]["ACME"]["scan_result_i"] = None
+    httpx_mock.add_response(url=f"{_MD}/hash/abc", json=body)
+    engine = MetaDefenderEngine("k")
+    with pytest.raises(HScannerError) as exc:
+        await engine.get_file_report("abc")
+    await engine.close()
+    assert exc.value.code == ErrorCode.ENGINE_CLIENT_ERROR
+    assert "MetaDefender" in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_poll_until_complete(httpx_mock):
     httpx_mock.add_response(
         url=f"{_MD}/file/DID",
@@ -204,6 +244,20 @@ async def test_poll_until_complete(httpx_mock):
     httpx_mock.add_response(url=f"{_MD}/file/DID", json=_found_body(0, 32))
     engine = MetaDefenderEngine("k", poll_interval=0)
     report = await engine.wait_for_analysis("DID", "abc")
+    await engine.close()
+    assert report.assessment_complete is True
+    assert report.engine_stats == {"malicious": 0, "undetected": 32}
+
+
+@pytest.mark.asyncio
+async def test_poll_completes_on_terminal_result_before_progress_100(httpx_mock):
+    body = _found_body(0, 32)
+    body["scan_results"]["progress_percentage"] = 85
+    httpx_mock.add_response(url=f"{_MD}/file/DID", json=body)
+    engine = MetaDefenderEngine("k", poll_interval=0)
+
+    report = await engine.wait_for_analysis("DID", "abc")
+
     await engine.close()
     assert report.assessment_complete is True
     assert report.engine_stats == {"malicious": 0, "undetected": 32}

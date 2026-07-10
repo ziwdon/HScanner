@@ -60,7 +60,7 @@ class VirusTotalEngine(EngineHttpMixin):
             raise HScannerError(
                 ErrorCode.ENGINE_CLIENT_ERROR, f"VirusTotal client error {response.status_code}"
             )
-        return self._to_report(response.json(), sha256)
+        return self._to_report(self._json_body(response, "file report"), sha256)
 
     async def get_large_upload_url(self) -> str:
         response = await self._request_with_retry(
@@ -70,7 +70,13 @@ class VirusTotalEngine(EngineHttpMixin):
             raise HScannerError(
                 ErrorCode.ENGINE_CLIENT_ERROR, f"VirusTotal upload URL error {response.status_code}"
             )
-        return response.json()["data"]
+        body = self._json_body(response, "large upload URL")
+        upload_url = body.get("data")
+        if not isinstance(upload_url, str) or not upload_url:
+            raise HScannerError(
+                ErrorCode.UPLOAD_FAILED, "VirusTotal malformed large upload URL response"
+            )
+        return upload_url
 
     async def upload_file(self, path: Path) -> str:
         size = path.stat().st_size
@@ -79,7 +85,13 @@ class VirusTotalEngine(EngineHttpMixin):
             response = await self._post_file(upload_url, path)
         else:
             response = await self._post_file(f"{_VT_BASE}/files", path)
-        return response["data"]["id"]
+        data = response.get("data")
+        analysis_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(analysis_id, str) or not analysis_id:
+            raise HScannerError(
+                ErrorCode.UPLOAD_FAILED, "VirusTotal malformed upload response"
+            )
+        return analysis_id
 
     async def _post_file(self, url: str, path: Path) -> dict[str, Any]:
         response = await self._request_with_retry(
@@ -89,7 +101,7 @@ class VirusTotalEngine(EngineHttpMixin):
             raise HScannerError(
                 ErrorCode.UPLOAD_FAILED, f"VirusTotal upload error {response.status_code}"
             )
-        return response.json()
+        return self._json_body(response, "upload")
 
     async def wait_for_analysis(self, analysis_id: str, sha256: str) -> EngineFileReport:
         deadline = self._monotonic() + self.poll_timeout
@@ -102,16 +114,32 @@ class VirusTotalEngine(EngineHttpMixin):
                     ErrorCode.ENGINE_CLIENT_ERROR,
                     f"VirusTotal analysis error {response.status_code}",
                 )
-            status = response.json().get("data", {}).get("attributes", {}).get("status")
+            body = self._json_body(response, "analysis")
+            status = body.get("data", {}).get("attributes", {}).get("status")
             if status == "completed":
                 report = await self.get_file_report(sha256)
-                return report if report is not None else self._to_report(response.json(), sha256)
+                return report if report is not None else self._to_report(body, sha256)
             if self._monotonic() >= deadline:
                 raise HScannerError(
                     ErrorCode.ANALYSIS_TIMEOUT, "VirusTotal analysis polling timed out"
                 )
             self._notify_wait(self.poll_interval, ScanStage.POLLING)
             await self._sleep(self.poll_interval)
+
+    def _json_body(self, response: httpx.Response, context: str) -> dict[str, Any]:
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR,
+                f"VirusTotal malformed {context} response",
+            ) from exc
+        if not isinstance(body, dict):
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR,
+                f"VirusTotal malformed {context} response",
+            )
+        return body
 
     def _to_report(self, payload: dict[str, Any], sha256: str) -> EngineFileReport:
         attributes = payload.get("data", {}).get("attributes", {})

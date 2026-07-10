@@ -65,6 +65,7 @@ class QuotaCounter:
         self.daily = daily
         self.monthly = monthly
         self._now = now
+        self._session_counts: dict[str, int] = {}
 
     def _keys(self) -> tuple[str, str]:
         now = self._now()
@@ -74,10 +75,13 @@ class QuotaCounter:
         )
 
     def _count(self, key: str) -> int:
-        row = self.conn.execute(
-            "SELECT count FROM quota_counter WHERE period_key=?", (key,)
-        ).fetchone()
-        return row["count"] if row else 0
+        try:
+            row = self.conn.execute(
+                "SELECT count FROM quota_counter WHERE period_key=?", (key,)
+            ).fetchone()
+        except sqlite3.Error:
+            return self._session_counts.get(key, 0)
+        return (row["count"] if row else 0) + self._session_counts.get(key, 0)
 
     def remaining_ok(self) -> bool:
         return not self.exhausted_reasons()
@@ -92,13 +96,22 @@ class QuotaCounter:
         return tuple(reasons)
 
     def record(self) -> None:
-        for key in self._keys():
-            self.conn.execute(
-                "INSERT INTO quota_counter (period_key, count) VALUES (?, 1) "
-                "ON CONFLICT(period_key) DO UPDATE SET count = count + 1",
-                (key,),
-            )
-        self.conn.commit()
+        keys = self._keys()
+        try:
+            for key in keys:
+                self.conn.execute(
+                    "INSERT INTO quota_counter (period_key, count) VALUES (?, 1) "
+                    "ON CONFLICT(period_key) DO UPDATE SET count = count + 1",
+                    (key,),
+                )
+            self.conn.commit()
+        except sqlite3.Error:
+            try:
+                self.conn.rollback()
+            except (AttributeError, sqlite3.Error):
+                pass
+            for key in keys:
+                self._session_counts[key] = self._session_counts.get(key, 0) + 1
 
 
 class RequestBudget:

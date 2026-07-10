@@ -210,6 +210,23 @@ async def test_upload_retry_resends_file_body(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_upload_missing_analysis_id_raises_upload_failed(tmp_path) -> None:
+    sample = tmp_path / "tool.sh"
+    sample.write_bytes(b"#!/bin/sh\n")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {}})
+
+    client, _ = make_client(handler)
+
+    with pytest.raises(HScannerError) as exc:
+        await client.upload_file(sample)
+
+    assert exc.value.code == ErrorCode.UPLOAD_FAILED
+    assert "VirusTotal" in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_wait_for_analysis_polls_until_completed() -> None:
     calls = {"n": 0}
 

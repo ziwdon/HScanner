@@ -64,7 +64,7 @@ class MetaDefenderEngine(EngineHttpMixin):
             raise HScannerError(
                 ErrorCode.ENGINE_CLIENT_ERROR, f"MetaDefender client error {response.status_code}"
             )
-        body = response.json()
+        body = self._json_body(response, "hash lookup")
         if isinstance(body.get("error"), dict):  # 200-with-error guard (e.g. 404008 body)
             return None
         return self._to_report(body, sha256)
@@ -78,7 +78,13 @@ class MetaDefenderEngine(EngineHttpMixin):
             raise HScannerError(
                 ErrorCode.UPLOAD_FAILED, f"MetaDefender upload error {response.status_code}"
             )
-        return response.json()["data_id"]
+        body = self._json_body(response, "upload")
+        data_id = body.get("data_id")
+        if not isinstance(data_id, str) or not data_id:
+            raise HScannerError(
+                ErrorCode.UPLOAD_FAILED, "MetaDefender malformed upload response"
+            )
+        return data_id
 
     async def wait_for_analysis(self, analysis_id: str, sha256: str) -> EngineFileReport:
         deadline = self._monotonic() + self.poll_timeout
@@ -91,9 +97,15 @@ class MetaDefenderEngine(EngineHttpMixin):
                     ErrorCode.ENGINE_CLIENT_ERROR,
                     f"MetaDefender analysis error {response.status_code}",
                 )
-            body = response.json()
+            body = self._json_body(response, "analysis")
             progress = (body.get("scan_results") or {}).get("progress_percentage")
-            if progress == 100:
+            scan_results = body.get("scan_results") or {}
+            process_info = body.get("process_info") or {}
+            if not isinstance(scan_results, dict):
+                scan_results = {}
+            if not isinstance(process_info, dict):
+                process_info = {}
+            if progress == 100 or self._assessment_complete(scan_results, process_info):
                 return self._to_report(body, sha256)
             if self._monotonic() >= deadline:
                 raise HScannerError(
@@ -104,6 +116,39 @@ class MetaDefenderEngine(EngineHttpMixin):
 
     async def close(self) -> None:
         await self.http.aclose()
+
+    def _json_body(self, response: httpx.Response, context: str) -> dict[str, Any]:
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR,
+                f"MetaDefender malformed {context} response",
+            ) from exc
+        if not isinstance(body, dict):
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR,
+                f"MetaDefender malformed {context} response",
+            )
+        return body
+
+    def _parse_int(
+        self,
+        value: Any,
+        field: str,
+        *,
+        default: int = 0,
+        allow_none: bool = True,
+    ) -> int:
+        if value is None and allow_none:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR,
+                f"MetaDefender malformed {field} response",
+            ) from exc
 
     def _assessment_complete(self, sr: dict[str, Any], process_info: dict[str, Any]) -> bool:
         progress = sr.get("progress_percentage")
@@ -126,17 +171,27 @@ class MetaDefenderEngine(EngineHttpMixin):
     def _to_report(self, body: dict[str, Any], sha256: str) -> EngineFileReport:
         sr = body.get("scan_results", {}) or {}
         process_info = body.get("process_info", {}) or {}
-        total = int(sr.get("total_avs") or 0)
-        detected = int(sr.get("total_detected_avs") or 0)
+        if not isinstance(sr, dict):
+            raise HScannerError(
+                ErrorCode.ENGINE_CLIENT_ERROR, "MetaDefender malformed scan_results response"
+            )
+        if not isinstance(process_info, dict):
+            process_info = {}
+        total = self._parse_int(sr.get("total_avs"), "total_avs")
+        detected = self._parse_int(sr.get("total_detected_avs"), "total_detected_avs")
         stats: dict[str, int] = {}
         if total or detected:
             stats = {"malicious": detected, "undetected": max(total - detected, 0)}
         details = sr.get("scan_details", {}) or {}
+        if not isinstance(details, dict):
+            details = {}
         detections = [
             {"engine": str(name), "category": "malicious", "name": str(info.get("threat_found"))}
             for name, info in sorted(details.items())
             if isinstance(info, dict) and info.get("threat_found")
-            and int(info.get("scan_result_i") or 0) != 0
+            and self._parse_int(
+                info.get("scan_result_i"), "scan_result_i", allow_none=False
+            ) != 0
         ]
         return EngineFileReport(
             engine_stats=stats,

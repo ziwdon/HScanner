@@ -20,9 +20,9 @@
       <span class="dot" aria-hidden="true"></span>
       <div id="cost-text"></div>
     </div>
-    <p id="current" class="hint"></p>
-    <p id="eta" class="hint"></p>
-    <p id="notice" class="hint" hidden></p>
+    <p id="current" class="hint" aria-live="polite"></p>
+    <p id="eta" class="hint" aria-live="polite"></p>
+    <p id="notice" class="hint" hidden role="status" aria-live="assertive"></p>
     <div class="btn-row">
       <button class="btn" id="pause">Pause</button>
       <button class="btn" id="resume" hidden>Resume</button>

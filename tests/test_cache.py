@@ -60,3 +60,27 @@ def test_cache_is_engine_scoped(tmp_path):
     cache.put(CachedEngineResult("virustotal", "abc", datetime.now(UTC), None, report))
     assert cache.get("virustotal", "abc") is not None
     assert cache.get("metadefender", "abc") is None  # not shared across engines
+
+
+def test_corrupt_payload_is_treated_as_cache_miss(tmp_path):
+    conn = open_global_store(base_dir=tmp_path)
+    conn.execute(
+        "INSERT INTO engine_cache "
+        "(engine_id, sha256, fetched_at, last_analysis_at, payload) VALUES (?, ?, ?, ?, ?)",
+        (_EID, "c" * 64, datetime.now(UTC).isoformat(), None, "{not json"),
+    )
+    conn.commit()
+
+    assert EngineCache(conn).get(_EID, "c" * 64) is None
+
+
+def test_bad_timestamp_is_treated_as_cache_miss(tmp_path):
+    conn = open_global_store(base_dir=tmp_path)
+    conn.execute(
+        "INSERT INTO engine_cache "
+        "(engine_id, sha256, fetched_at, last_analysis_at, payload) VALUES (?, ?, ?, ?, ?)",
+        (_EID, "d" * 64, "not-a-timestamp", None, "{}"),
+    )
+    conn.commit()
+
+    assert EngineCache(conn).get(_EID, "d" * 64) is None

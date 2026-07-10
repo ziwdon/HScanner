@@ -22,3 +22,14 @@ def test_shebang_script_sets_signal(tmp_path: Path):
     r = next(x for x in results if x.record.path.name == "run-me")
     assert r.shebang is True
     assert r.executable_bit is True
+
+
+def test_pak_with_elf_marker_is_upload_blocked(tmp_path: Path):
+    f = tmp_path / "assets.pak"
+    f.write_bytes(b"\x7fELF\x02\x01\x01" + b"\x00" * 64)
+
+    results = run_local_scan(tmp_path)
+
+    r = next(x for x in results if x.record.path.name == "assets.pak")
+    assert r.elf is True
+    assert r.classification.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
