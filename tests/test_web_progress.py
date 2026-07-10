@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import json
 import re
+from pathlib import Path
 
 import pytest
 from fastapi import Request
@@ -49,6 +50,21 @@ def test_report_page_404_for_unknown_id():
     response = client.get("/reports/nope")
     assert response.status_code == 404
     assert "expired or unavailable" in response.text
+
+
+def test_progress_status_lines_are_live_regions():
+    template = (
+        Path(__file__).parents[1]
+        / "src"
+        / "hscanner"
+        / "web"
+        / "templates"
+        / "progress.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="current" class="hint" aria-live="polite"' in template
+    assert 'id="eta" class="hint" aria-live="polite"' in template
+    assert 'id="notice" class="hint" hidden role="status" aria-live="assertive"' in template
 
 
 def test_report_download_route_still_matches_with_extension(tmp_path):

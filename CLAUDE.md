@@ -30,7 +30,7 @@ Not an antivirus — a triage tool.
 > **Shipped:** CLI/web `combined` mode over VirusTotal then MetaDefender; `EngineRotation`
 > priority/failover with per-engine pacing, Retry-After cooldowns, daily/monthly/per-scan quota
 > stops, short-wait/long-stop behavior, and pinned post-upload polling; cross-engine cache reuse;
-> required keys for every combined engine; CLI `--wait-threshold`; per-file `engine_id`, aggregate
+> required keys for every online combined engine; CLI `--wait-threshold`; per-file `engine_id`, aggregate
 > and per-engine request metrics, and `engine_breakdown` (`virustotal`, `metadefender`, `cache`,
 > `not_checked`) across JSON/CSV/HTML and the web report. Combined-report on-demand uploads route
 > back to the concrete engine that handled the file lookup.
@@ -108,10 +108,15 @@ visible. Verified 2026-06-20 with 94 passing tests and a clean Ruff run.
   precedence (6 → 3 → 4 → 5 → 2 → 1 → 0); the `main()` boundary is credential-safe (only "Internal
   error" is printed — never a traceback — and the API key never enters the report or any export).
 - **Web report registry** (`ReportRegistry` in `src/hscanner/web/report_store.py`, installed on
-  `app.state` by `create_app`): bounded in-memory store,
-  max 5 reports, 1-hour TTL. Reports expire on access and on each scan that evicts the oldest when
-  the cap is reached. Download endpoints at `/reports/{id}.json`, `/reports/{id}.html`,
-  `/reports/{id}.csv`; 404 with "expired or unavailable" message if the id is unknown.
+  `app.state` by `create_app`): bounded in-memory store backed by non-fatal persistent history
+  (`PersistentReportStore` in `src/hscanner/web/persistent_reports.py`). The history database is
+  `$XDG_STATE_HOME/hscanner/reports.db` (or the platform state-dir equivalent), with 7-day
+  access-based retention and fall-through loading from `/history` and report URLs. Persistent-store
+  startup, read, and write failures degrade to memory-only behavior; finished scans must not be
+  lost or marked failed because `reports.db` is corrupt, locked, or unwritable. The memory tier
+  keeps max 5 reports with a 1-hour TTL. Download endpoints at `/reports/{id}.json`,
+  `/reports/{id}.html`, `/reports/{id}.csv`; 404 with "expired or unavailable" message if the id
+  is unknown.
 - **Policy per-scan ceiling**: `max_vt_requests` in the policy YAML is wired through `RequestBudget`
   in both CLI (`--max-vt-requests` overrides) and web scans.
 - **Security invariants verified**: `tests/test_no_key_persisted.py` covers all four render paths
@@ -173,7 +178,7 @@ final whole-branch review.
   was lower-risk.
 - **On-demand per-file upload:** `scan_single_file(root, relative_path, engine, cache)` in
   `src/hscanner/scanner.py` — raises `SingleFileNotEligible(reason)` for sensitive/non-priority/
-  too-large files before any engine call. `FileScanManager` (`src/hscanner/web/file_scan.py`) runs
+  too-large files before any engine call. `FileScanManager` (`src/hscanner/web/jobs.py`) runs
   serial per-file jobs, refuses new jobs while a folder scan is active, and surfaces progress via
   SSE. `ReportRegistry.update_file` merges the finished `FileResult` back into the stored report.
 - **Endpoints:** `POST /reports/{id}/files/{index}/scan` (202 + job_id or 400/409/404),
@@ -187,7 +192,7 @@ final whole-branch review.
 - Verified 2026-06-22 with **246 passing tests** and a clean Ruff run.
 
 **Web UI redesigned** — "triage console" theme (`src/hscanner/web/static/app.css`): dark
-forensic palette, Space Grotesk + IBM Plex Sans/Mono, a severity ramp as the signature element.
+forensic palette, local system font stacks, and a severity ramp as the signature element.
 Attention-first report (severity spectrum bar, summary tiles incl. an Uploaded count, expandable
 file cards, collapsed secondary groups capped at 500 rows with `content-visibility` for large
 inventories). Report display model is presentation-only in `src/hscanner/report_view.py`
@@ -216,13 +221,16 @@ keyring (API-key storage), PyYAML (policy), pytest + pytest-asyncio + pytest-htt
   requirements source; there is no separate `requirements.txt`.
 - Test: `pytest` (with the venv active — no `PYTHONPATH` needed). Lint: `ruff check .`
 - CLI: `hscanner scan /path/to/folder` (add `--json` for the structured AI-integration surface).
-  The CLI runs online scans automatically when a key resolves (env `HS_API_KEY_VIRUSTOTAL` or
-  `HS_API_KEY_METADEFENDER`, or the saved keyring entry); local-only inventory otherwise.
-  Engine selection: `--engine virustotal` (default) or `--engine metadefender`.
+  The CLI runs online scans automatically when the required key resolves (env
+  `HS_API_KEY_VIRUSTOTAL` or `HS_API_KEY_METADEFENDER`, or the saved keyring entry); local-only
+  inventory otherwise. Combined online scans require keys for every combined engine; if any are
+  missing, the CLI falls back to local-only inventory unless `--require-engine` is set.
+  Engine selection: `--engine virustotal` (default), `--engine metadefender`, or
+  `--engine combined`.
   Online flags: `--resume` (continue an interrupted scan), `--refresh` (ignore cache and
   force re-query). Report-export flags: `--report PATH` (write a `.json`/`.html`/`.csv` report —
-  format inferred from the extension, written atomically), `--require-engine` (exit 4 if no key
-  resolves), `--max-requests N` (per-scan engine request ceiling, overrides the policy). Stable
+  format inferred from the extension, written atomically), `--require-engine` (exit 4 if required
+  key(s) do not resolve), `--max-requests N` (per-scan engine request ceiling, overrides the policy). Stable
   exit codes with deterministic precedence (6→3→4→5→2→1→0): 0 none / 1 attention / 2 file errors /
   3 bad args, invalid config, or export failure / 4 no key (`--require-engine` with none, or key
   rejected by the engine) / 5 quota exhausted / 6 fatal internal error (the `main()` boundary is

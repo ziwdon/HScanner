@@ -5,6 +5,10 @@ from pathlib import Path
 from hscanner.models import FileRecord
 
 
+class InventoryPathError(ValueError):
+    """Raised when a requested report path is outside the scan root."""
+
+
 def iter_inventory(root: Path) -> Iterator[FileRecord]:
     root = root.resolve()
     candidates: list[Path] = []
@@ -47,7 +51,17 @@ def iter_inventory(root: Path) -> Iterator[FileRecord]:
 
 
 def record_from_path(root: Path, relative_path: str) -> FileRecord:
-    path = root / relative_path
+    root = root.resolve()
+    requested = Path(relative_path)
+    if requested.is_absolute():
+        raise InventoryPathError("path must be relative to the scan root")
+    path = root / requested
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise FileNotFoundError(path) from exc
+    if not resolved.is_relative_to(root):
+        raise InventoryPathError("path escapes the scan root")
     stat = path.lstat()  # raises FileNotFoundError if missing; symlink's own metadata
     is_symlink = path.is_symlink()
     is_regular = path.is_file() and not is_symlink

@@ -20,7 +20,7 @@ from hscanner.engines.base import EngineFileReport
 from hscanner.engines.rotation import EngineRotation, EngineSlot
 from hscanner.errors import ErrorCode, HScannerError
 from hscanner.hash import read_magic, sha256_file
-from hscanner.inventory import iter_inventory, record_from_path
+from hscanner.inventory import InventoryPathError, iter_inventory, record_from_path
 from hscanner.models import (
     AnalysisStatus,
     ClassificationBucket,
@@ -268,6 +268,48 @@ def _file_finished_event(index: int, result: FileResult) -> ScanProgressEvent:
     )
 
 
+def _apply_persisted_online_state(result: FileResult, state: dict[str, str]) -> bool:
+    try:
+        engine_state = EngineState(state["engine_state"])
+        lookup_status = LookupStatus(state["lookup_status"])
+        upload_status = UploadStatus(state["upload_status"])
+    except (KeyError, ValueError):
+        return False
+    if engine_state != EngineState.NOT_FOUND or lookup_status != LookupStatus.NOT_FOUND:
+        return False
+    result.engine_id = state.get("engine_id")
+    result.engine_state = engine_state
+    result.lookup_status = lookup_status
+    result.upload_status = upload_status
+    result.action = ReportAction.RESULT_REUSED
+    return True
+
+
+def _record_persisted_online_state(scan_state: ScanState | None, result: FileResult) -> None:
+    if scan_state is None or result.sha256 is None:
+        return
+    if (
+        result.engine_state != EngineState.NOT_FOUND
+        or result.lookup_status != LookupStatus.NOT_FOUND
+    ):
+        return
+    try:
+        stat = result.record.path.stat()
+        scan_state.record_online_state(
+            result.record.relative_path,
+            stat.st_size,
+            stat.st_mtime_ns,
+            result.sha256,
+            result.engine_id,
+            result.engine_state.value,
+            result.lookup_status.value,
+            result.upload_status.value,
+            result.action.value,
+        )
+    except (OSError, sqlite3.Error):
+        pass
+
+
 async def run_online_scan(
     root: Path,
     rotation: EngineRotation,
@@ -336,6 +378,24 @@ async def run_online_scan(
                     result.outcome_reason = OutcomeReason.LOW_RISK
                     continue  # hashed locally; intentionally not checked against VirusTotal
                 sha = result.sha256
+                if not refresh and scan_state is not None:
+                    try:
+                        stat = result.record.path.stat()
+                        persisted = scan_state.cached_online_state(
+                            result.record.relative_path,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                            sha,
+                        )
+                    except (OSError, sqlite3.Error):
+                        persisted = None
+                    if persisted is not None and _apply_persisted_online_state(result, persisted):
+                        engine_results[sha] = (
+                            EngineState.NOT_FOUND,
+                            None,
+                            result.engine_id or all_ids[0],
+                        )
+                        continue
                 if sha in engine_results:
                     state, report, engine_id = engine_results[sha]
                     result.engine_id = engine_id
@@ -432,6 +492,7 @@ async def run_online_scan(
                     await asyncio.sleep(wait)
                     # retry the same file with a (hopefully) available engine
             finally:
+                _record_persisted_online_state(scan_state, result)
                 classify_report_result(result)
                 _emit(
                     observer,
@@ -512,7 +573,10 @@ async def scan_single_file(
     policy: dict[str, Any] | None = None,
 ) -> FileResult:
     policy = policy or load_default_policy()
-    record = record_from_path(root, relative_path)  # FileNotFoundError if vanished
+    try:
+        record = record_from_path(root, relative_path)  # FileNotFoundError if vanished
+    except InventoryPathError as exc:
+        raise SingleFileNotEligible("invalid_path") from exc
     classification = classify_file(record, policy)
     if classification.bucket == ClassificationBucket.SKIPPED:
         reason = (
@@ -584,7 +648,10 @@ async def scan_single_file_with_rotation(
     state_callback: Callable[[str, str | None], None] | None = None,
 ) -> FileResult:
     policy = policy or load_default_policy()
-    record = record_from_path(root, relative_path)
+    try:
+        record = record_from_path(root, relative_path)
+    except InventoryPathError as exc:
+        raise SingleFileNotEligible("invalid_path") from exc
     classification = classify_file(record, policy)
     if classification.bucket == ClassificationBucket.SKIPPED:
         reason = (

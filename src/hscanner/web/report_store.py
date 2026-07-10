@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -7,6 +8,8 @@ from typing import Any
 
 from hscanner.models import FileResult
 from hscanner.report import ScanReport, _report_file, classify_report_result, compute_summary
+
+logger = logging.getLogger(__name__)
 
 
 class ReportRegistry:
@@ -17,11 +20,16 @@ class ReportRegistry:
         ttl_seconds: float = 3600,
         monotonic: Callable[[], float] = time.monotonic,
         persistent_store: Any | None = None,
+        persistent_update_interval: float = 2.0,
     ) -> None:
         self.max_reports = max_reports
         self.ttl_seconds = ttl_seconds
         self._monotonic = monotonic
         self._persistent_store = persistent_store
+        self._persistent_warning_emitted = False
+        self._persistent_update_interval = persistent_update_interval
+        self._persistent_last_write: dict[str, float] = {}
+        self._persistent_dirty: set[str] = set()
         self._lock = Lock()
         self._reports: OrderedDict[str, tuple[float, ScanReport]] = OrderedDict()
 
@@ -30,8 +38,7 @@ class ReportRegistry:
             now = self._monotonic()
             self._prune(now)
             self._remember(now, report)
-            if self._persistent_store is not None:
-                self._persistent_store.put(report)
+            self._persistent_put(report, now=now)
 
     def get(self, report_id: str) -> ScanReport | None:
         with self._lock:
@@ -44,7 +51,7 @@ class ReportRegistry:
                 return item[1]
             if self._persistent_store is None:
                 return None
-            report = self._persistent_store.get(report_id)
+            report = self._persistent_get(report_id)
             if report is not None:
                 self._remember(now, report)
             return report
@@ -57,7 +64,7 @@ class ReportRegistry:
             if self._persistent_store is not None and hasattr(
                 self._persistent_store, "list_reports"
             ):
-                for report in self._persistent_store.list_reports():
+                for report in self._persistent_list():
                     reports[report.report_id] = report
             for _, report in self._reports.values():
                 reports[report.report_id] = report
@@ -73,11 +80,7 @@ class ReportRegistry:
             item = self._reports.get(report_id)
             if item is None:
                 self._prune(now)
-                report = (
-                    self._persistent_store.get(report_id)
-                    if self._persistent_store is not None
-                    else None
-                )
+                report = self._persistent_get(report_id)
                 if report is None:
                     return None
             else:
@@ -91,9 +94,66 @@ class ReportRegistry:
             new_report = dataclasses.replace(report, files=files, summary=summary)
             self._remember(now, new_report)
             self._prune(now)
-            if self._persistent_store is not None:
-                self._persistent_store.put(new_report)
+            self._persistent_put_throttled(new_report, now)
             return new_report
+
+    def flush(self, report_id: str) -> None:
+        with self._lock:
+            item = self._reports.get(report_id)
+            if item is None:
+                return
+            report = item[1]
+            now = self._monotonic()
+            self._persistent_put(report, now=now)
+
+    def _persistent_put(self, report: ScanReport, *, now: float | None = None) -> None:
+        if self._persistent_store is None:
+            return
+        try:
+            self._persistent_store.put(report)
+            self._persistent_last_write[report.report_id] = (
+                self._monotonic() if now is None else now
+            )
+            self._persistent_dirty.discard(report.report_id)
+        except Exception as exc:
+            self._warn_persistent_failure("write", exc)
+
+    def _persistent_put_throttled(self, report: ScanReport, now: float) -> None:
+        if self._persistent_store is None:
+            return
+        last = self._persistent_last_write.get(report.report_id)
+        if last is None or now - last >= self._persistent_update_interval:
+            self._persistent_put(report, now=now)
+            return
+        self._persistent_dirty.add(report.report_id)
+
+    def _persistent_get(self, report_id: str) -> ScanReport | None:
+        if self._persistent_store is None:
+            return None
+        try:
+            return self._persistent_store.get(report_id)
+        except Exception as exc:
+            self._warn_persistent_failure("read", exc)
+            return None
+
+    def _persistent_list(self) -> list[ScanReport]:
+        if self._persistent_store is None or not hasattr(self._persistent_store, "list_reports"):
+            return []
+        try:
+            return list(self._persistent_store.list_reports())
+        except Exception as exc:
+            self._warn_persistent_failure("list", exc)
+            return []
+
+    def _warn_persistent_failure(self, operation: str, exc: Exception) -> None:
+        if self._persistent_warning_emitted:
+            return
+        self._persistent_warning_emitted = True
+        logger.warning(
+            "Persistent report store %s failed; continuing with in-memory reports only",
+            operation,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
     def _remember(self, now: float, report: ScanReport) -> None:
         self._reports[report.report_id] = (now, report)

@@ -85,6 +85,8 @@
 <script>
 const REPORT_ID = {{ view.report_id | tojson }};
 const SECTION_META = {{ view.section_meta | tojson }};
+// Pinned to report_view._OUTCOME_ORDER.
+const SECTION_ORDER = ['infected', 'needs_attention', 'no_detections', 'skipped', 'error'];
 const uploadProgress = document.getElementById('upload-progress');
 const uploadProgressTitle = document.getElementById('upload-progress-title');
 const uploadProgressCount = document.getElementById('upload-progress-count');
@@ -128,6 +130,12 @@ function updateSectionCount(section) {
   if (count) count.textContent = total;
   const navLink = document.querySelector(`.report-nav a[href="#${section.id}"] b`);
   if (navLink) navLink.textContent = total;
+  section.hidden = total === 0;
+  if (navLink) navLink.closest('a').hidden = total === 0;
+  section.querySelectorAll(':scope > .btn-scan-all').forEach((button) => {
+    button.disabled = total === 0;
+    button.hidden = total === 0;
+  });
 }
 
 function ensureSection(sectionData) {
@@ -141,7 +149,13 @@ function ensureSection(sectionData) {
   const navLink = document.createElement('a');
   navLink.href = `#${meta.id}`;
   navLink.innerHTML = `<span>${meta.title}</span><b>0</b>`;
-  nav.appendChild(navLink);
+  const orderIndex = SECTION_ORDER.indexOf(meta.outcome);
+  const beforeNav = Array.from(nav.querySelectorAll('a')).find((link) => {
+    const id = link.getAttribute('href')?.slice(1);
+    const existing = Object.values(SECTION_META).find((item) => item.id === id);
+    return existing && SECTION_ORDER.indexOf(existing.outcome) > orderIndex;
+  });
+  nav.insertBefore(navLink, beforeNav || null);
 
   section = document.createElement('section');
   section.className = 'section';
@@ -162,7 +176,11 @@ function ensureSection(sectionData) {
     if (!document.getElementById('scan-all')) button.id = 'scan-all';
     section.appendChild(button);
   }
-  sections.appendChild(section);
+  const beforeSection = Array.from(sections.querySelectorAll(':scope > .section')).find((node) => {
+    const existing = Object.values(SECTION_META).find((item) => item.id === node.id);
+    return existing && SECTION_ORDER.indexOf(existing.outcome) > orderIndex;
+  });
+  sections.insertBefore(section, beforeSection || null);
   return section;
 }
 
@@ -182,6 +200,9 @@ function applyFileUpdate(data) {
   destination.appendChild(card);
   updateSectionCount(previousSection);
   updateSectionCount(destination);
+  destination.hidden = false;
+  const navLink = document.querySelector(`.report-nav a[href="#${destination.id}"]`);
+  if (navLink) navLink.hidden = false;
 }
 
 function applyBatchEvent(data) {

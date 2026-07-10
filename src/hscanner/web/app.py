@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,19 @@ from hscanner.web.report_store import ReportRegistry
 from hscanner.web.routes import router
 
 _STATIC_DIR = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
+
+
+def _default_report_registry() -> ReportRegistry:
+    try:
+        persistent_store = PersistentReportStore()
+    except Exception:
+        logger.warning(
+            "Persistent report store initialization failed; continuing with in-memory reports only",
+            exc_info=True,
+        )
+        persistent_store = None
+    return ReportRegistry(persistent_store=persistent_store)
 
 
 def create_app(
@@ -23,7 +37,7 @@ def create_app(
     app.state.report_registry = (
         report_registry
         if report_registry is not None
-        else ReportRegistry(persistent_store=PersistentReportStore())
+        else _default_report_registry()
     )
     app.state.job_manager = JobManager()
     app.state.file_scan_manager = FileScanManager(

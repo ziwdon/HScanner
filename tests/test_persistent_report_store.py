@@ -108,3 +108,19 @@ def test_persistent_store_dump_excludes_unrelated_secret(tmp_path) -> None:
 
     assert "report-id" in dump
     assert secret not in dump
+
+
+def test_persistent_store_put_does_not_delete_expired_each_write(tmp_path, monkeypatch) -> None:
+    store = PersistentReportStore(path=tmp_path / "reports.db")
+    calls = 0
+
+    def count_delete_expired():
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(store, "delete_expired", count_delete_expired)
+
+    store.put(_report("first"))
+    store.put(_report("second"))
+
+    assert calls == 0

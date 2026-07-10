@@ -62,7 +62,6 @@ class PersistentReportStore:
                 (report.report_id, report.generated_at, accessed_at, payload),
             )
             conn.commit()
-        self.delete_expired()
 
     def get(self, report_id: str) -> ScanReport | None:
         self.delete_expired()

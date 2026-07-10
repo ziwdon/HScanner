@@ -19,10 +19,11 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
         )
 
     basename = record.path.name
-    ext = _extension(record.path)
+    match_basename = basename.lower()
+    ext = _extension(record.path).lower()
     buckets = policy["buckets"]
 
-    if _matches_rule(basename, ext, buckets["sensitive"]):
+    if _matches_rule(match_basename, ext, buckets["sensitive"]):
         return Classification(
             bucket=ClassificationBucket.SKIPPED,
             reason=f"sensitive pattern matched: {basename}",
@@ -31,7 +32,7 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             skip_reason=OutcomeReason.SENSITIVE,
         )
 
-    if _matches_rule(basename, ext, buckets["skipped"]):
+    if _matches_rule(match_basename, ext, buckets["skipped"]):
         return Classification(
             bucket=ClassificationBucket.SKIPPED,
             reason=f"low-risk skipped pattern matched: {basename}",
@@ -84,7 +85,7 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             suspicious=True,
         )
 
-    if ext in set(buckets["hash_only"].get("extensions", [])):
+    if ext in _normalized_extensions(buckets["hash_only"].get("extensions", [])):
         return Classification(
             bucket=ClassificationBucket.HASH_ONLY,
             reason=buckets["hash_only"]["reason"],
@@ -108,14 +109,16 @@ def _extension(path: Path) -> str:
 
 
 def _matches_rule(basename: str, ext: str, rule: dict[str, Any]) -> bool:
-    if ext in set(rule.get("extensions", [])):
+    if ext in _normalized_extensions(rule.get("extensions", [])):
         return True
-    return any(fnmatchcase(basename, pattern) for pattern in rule.get("filename_patterns", []))
+    return any(
+        fnmatchcase(basename, pattern.lower())
+        for pattern in rule.get("filename_patterns", [])
+    )
 
 
 def _is_upload_like(record: FileRecord, ext: str, rule: dict[str, Any]) -> bool:
-    extensions = {e.lower() for e in rule.get("extensions", [])}
-    if ext.lower() in extensions:
+    if ext in _normalized_extensions(rule.get("extensions", [])):
         return True
     executable_bits = 0o111
     return bool(rule.get("executable_bit")) and bool(record.mode & executable_bits)
@@ -124,9 +127,31 @@ def _is_upload_like(record: FileRecord, ext: str, rule: dict[str, Any]) -> bool:
 def _matches_suspicious_block(record: FileRecord, ext: str, rules: dict[str, Any]) -> bool:
     size_mb = record.size / (1024 * 1024)
     for rule in rules.get("rules", []):
-        if rule.get("extension") == ext and size_mb >= rule.get("min_size_mb", float("inf")):
+        rule_ext = str(rule.get("extension", "")).lower()
+        if rule_ext == ext and size_mb >= rule.get("min_size_mb", float("inf")):
             return True
     return False
+
+
+def _matches_executable_marker_block(
+    record: FileRecord,
+    signals: dict[str, bool],
+    policy: dict[str, Any],
+) -> bool:
+    ext = _extension(record.path).lower()
+    for rule in policy["buckets"]["suspicious_upload_blocked"].get("rules", []):
+        rule_ext = str(rule.get("extension", "")).lower()
+        if (
+            rule_ext == ext
+            and rule.get("executable_markers") is True
+            and (signals["elf"] or signals["shebang"])
+        ):
+            return True
+    return False
+
+
+def _normalized_extensions(extensions: list[str]) -> set[str]:
+    return {extension.lower() for extension in extensions}
 
 
 def file_signals(prefix: bytes, mode: int) -> dict[str, bool]:
@@ -145,6 +170,14 @@ def reclassify_with_signals(
     signals = file_signals(prefix, record.mode)
     if not (signals["elf"] or signals["shebang"]):
         return classification
+    if _matches_executable_marker_block(record, signals, policy):
+        return Classification(
+            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+            reason="executable marker in upload-blocked file type",
+            upload_eligible=False,
+            hash_eligible=True,
+            suspicious=True,
+        )
     soft = policy["size_limits"]["large_upload_soft_block_mb"] * 1024 * 1024
     absolute = policy["size_limits"]["absolute_upload_block_mb"] * 1024 * 1024
     if record.size > soft or record.size > absolute:

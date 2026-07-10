@@ -19,9 +19,17 @@ def render_json(report: ScanReport) -> str:
     return json.dumps(report_payload(report), indent=2, sort_keys=True) + "\n"
 
 
+def _utf8_replacement_text(value: Any) -> str:
+    return str(value).encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _utf8_bytes(value: str) -> bytes:
+    return value.encode("utf-8", errors="replace")
+
+
 def _spreadsheet_safe(value: Any) -> str:
-    text = "" if value is None else str(value)
-    if text.lstrip().startswith(("=", "+", "-", "@")):
+    text = "" if value is None else _utf8_replacement_text(value)
+    if text.startswith(("\t", "\r")) or text.lstrip().startswith(("=", "+", "-", "@")):
         return "'" + text
     return text
 
@@ -150,31 +158,33 @@ def render_html(report: ScanReport) -> str:
         autoescape=select_autoescape(("html",)),
     )
     template = environment.get_template("standalone_report.html")
-    return template.render(view=build_report_view(report, secondary_cap=None))
+    return _utf8_replacement_text(
+        template.render(view=build_report_view(report, secondary_cap=None))
+    )
 
 
 def render_export(report: ScanReport, suffix: str) -> tuple[bytes, str]:
     normalized = suffix.lower()
     if normalized == ".json":
-        return render_json(report).encode("utf-8"), "application/json; charset=utf-8"
+        return _utf8_bytes(render_json(report)), "application/json; charset=utf-8"
     if normalized == ".html":
-        return render_html(report).encode("utf-8"), "text/html; charset=utf-8"
+        return _utf8_bytes(render_html(report)), "text/html; charset=utf-8"
     if normalized == ".csv":
-        return render_csv(report).encode("utf-8"), "text/csv; charset=utf-8"
+        return _utf8_bytes(render_csv(report)), "text/csv; charset=utf-8"
     raise ExportError(f"Unsupported report extension: {suffix or '<none>'}")
 
 
 def export_report(report: ScanReport, output: Path) -> None:
     if not output.parent.is_dir():
         raise ExportError(f"Report directory does not exist: {output.parent}")
-    data, _ = render_export(report, output.suffix)
     temporary: Path | None = None
     try:
+        data, _ = render_export(report, output.suffix)
         with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as handle:
             temporary = Path(handle.name)
             handle.write(data)
         temporary.replace(output)
-    except OSError as exc:
+    except (OSError, UnicodeEncodeError, ValueError) as exc:
         raise ExportError(f"Could not write report: {exc}") from exc
     finally:
         if temporary is not None:

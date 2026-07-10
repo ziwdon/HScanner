@@ -1,10 +1,21 @@
 from datetime import UTC, datetime
 
-from hscanner.budget import BudgetExhausted, QuotaStopReason, RequestMetrics
+import httpx
+
+from hscanner.budget import (
+    BudgetExhausted,
+    QuotaCounter,
+    QuotaStopReason,
+    RequestBudget,
+    RequestKind,
+    RequestMetrics,
+)
 from hscanner.cache import EngineCache
 from hscanner.engines.base import EngineFileReport, EngineInfo
+from hscanner.engines.metadefender import MetaDefenderEngine
 from hscanner.errors import ErrorCode, HScannerError
 from hscanner.models import EngineState, ReportAction, ReportCategory, ScanStatus
+from hscanner.report import build_scan_report, cli_exit_code
 from hscanner.scanner import run_online_scan, single_engine_rotation
 from hscanner.store import open_global_store
 
@@ -224,6 +235,78 @@ async def test_quota_exhausted_stops_scan_and_sets_flag(tmp_path):
     assert EngineState.NOT_QUERIED in states  # second file never queried
 
 
+async def test_quota_exit_code_wins_over_file_errors_in_real_scan(tmp_path, monkeypatch):
+    scan_root = tmp_path / "root"
+    scan_root.mkdir()
+    _write(scan_root, "broken.sh", "#!/bin/sh\nbroken\n")
+    _write(scan_root, "tool.sh", "#!/bin/sh\ntool\n")
+
+    import hscanner.scanner as scanner
+    from hscanner.budget import QuotaExhausted
+
+    real_sha256_file = scanner.sha256_file
+
+    def flaky_hash(path):
+        if path.name == "broken.sh":
+            raise OSError("hash failed")
+        return real_sha256_file(path)
+
+    class QuotaClient(FakeVTClient):
+        async def get_file_report(self, sha256: str):
+            raise QuotaExhausted((QuotaStopReason.DAILY,))
+
+    monkeypatch.setattr(scanner, "sha256_file", flaky_hash)
+
+    outcome = await run_online_scan(
+        scan_root,
+        single_engine_rotation(QuotaClient()),
+        upload_consent=False,
+        cache=_isolated_cache(tmp_path),
+    )
+    report = build_scan_report(
+        scan_root,
+        outcome.results,
+        online=True,
+        upload_consent=False,
+        status=outcome.status,
+        quota_stop_reasons=outcome.quota_stop_reasons,
+    )
+
+    assert outcome.status == ScanStatus.QUOTA_EXHAUSTED
+    assert report.summary.errors == 1
+    assert cli_exit_code(report) == 5
+
+
+async def test_auth_exit_code_wins_over_attention_in_real_scan(tmp_path) -> None:
+    scan_root = tmp_path / "root"
+    scan_root.mkdir()
+    _write(scan_root, "one.sh", "#!/bin/sh\n1\n")
+    _write(scan_root, "two.sh", "#!/bin/sh\n2\n")
+
+    class BadKeyClient(FakeVTClient):
+        async def get_file_report(self, sha256: str):
+            raise HScannerError(ErrorCode.ENGINE_AUTH_FAILED, "bad key")
+
+    outcome = await run_online_scan(
+        scan_root,
+        single_engine_rotation(BadKeyClient()),
+        upload_consent=False,
+        cache=_isolated_cache(tmp_path),
+    )
+    report = build_scan_report(
+        scan_root,
+        outcome.results,
+        online=True,
+        upload_consent=False,
+        status=outcome.status,
+        quota_stop_reasons=outcome.quota_stop_reasons,
+    )
+
+    assert outcome.status == ScanStatus.AUTH_FAILED
+    assert report.summary.needs_attention >= 1
+    assert cli_exit_code(report) == 4
+
+
 async def test_fresh_cache_hit_skips_client_lookup(tmp_path):
     scan_root = tmp_path / "root"
     scan_root.mkdir()
@@ -341,6 +424,100 @@ async def test_broken_cache_does_not_abort_scan(tmp_path):
     from hscanner.models import EngineState
     for r in outcome.results:
         assert r.engine_state == EngineState.FOUND
+
+
+async def test_quota_record_failure_does_not_abort_online_scan(tmp_path):
+    import sqlite3
+
+    class FailingQuotaConnection:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        def commit(self):
+            raise AssertionError("commit should not run after failed execute")
+
+    class BudgetedClient(FakeVTClient):
+        def __init__(self) -> None:
+            super().__init__(report=CLEAN, found=True)
+            self.budget = RequestBudget(
+                quota=QuotaCounter(FailingQuotaConnection(), daily=10, monthly=10)
+            )
+
+        async def get_file_report(self, sha256: str):
+            await self.budget.acquire(RequestKind.LOOKUP)
+            return await super().get_file_report(sha256)
+
+        def metrics_snapshot(self):
+            return self.budget.snapshot()
+
+    scan_root = tmp_path / "root"
+    scan_root.mkdir()
+    _write(scan_root, "one.sh", "#!/bin/sh\n1\n")
+    client = BudgetedClient()
+
+    outcome = await run_online_scan(
+        scan_root,
+        single_engine_rotation(client),
+        upload_consent=False,
+        cache=_isolated_cache(tmp_path),
+    )
+
+    assert outcome.status == ScanStatus.COMPLETED
+    assert client.lookups
+    assert outcome.results[0].engine_state == EngineState.FOUND
+
+
+async def test_malformed_engine_body_marks_file_error_and_scan_continues(tmp_path):
+    scan_root = tmp_path / "root"
+    scan_root.mkdir()
+    _write(scan_root, "one.sh", "#!/bin/sh\n1\n")
+    _write(scan_root, "two.sh", "#!/bin/sh\n2\n")
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "scan_results": {
+                        "progress_percentage": 100,
+                        "total_avs": "n/a",
+                        "total_detected_avs": 0,
+                        "scan_details": {},
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "scan_results": {
+                    "progress_percentage": 100,
+                    "total_avs": 2,
+                    "total_detected_avs": 0,
+                    "scan_details": {},
+                }
+            },
+        )
+
+    engine = MetaDefenderEngine(
+        "key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        budget=RequestBudget(per_minute=1000),
+    )
+
+    outcome = await run_online_scan(
+        scan_root,
+        single_engine_rotation(engine),
+        upload_consent=False,
+        cache=_isolated_cache(tmp_path),
+    )
+    await engine.close()
+
+    assert outcome.status == ScanStatus.COMPLETED
+    assert len(outcome.results) == 2
+    assert any(ErrorCode.ENGINE_CLIENT_ERROR in result.errors for result in outcome.results)
+    assert any(result.engine_state == EngineState.FOUND for result in outcome.results)
 
 
 # --- Sub-project G: combined-engine failover (Task 6) ------------------------

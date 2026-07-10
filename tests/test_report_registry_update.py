@@ -71,6 +71,7 @@ def test_update_file_persists_updated_report(tmp_path):
     updated.detections = [{"engine": "X", "category": "malicious", "name": "Trojan"}]
 
     reg.update_file(report.report_id, 0, updated)
+    reg.flush(report.report_id)
     restored = ReportRegistry(
         persistent_store=PersistentReportStore(path=db_path)
     ).get(report.report_id)
@@ -79,3 +80,45 @@ def test_update_file_persists_updated_report(tmp_path):
     assert restored.summary.infected == 1
     assert restored.summary.uploaded == 1
     assert restored.files[0].outcome == "infected"
+
+
+class RecordingPersistentStore:
+    def __init__(self) -> None:
+        self.puts = []
+
+    def put(self, report):
+        self.puts.append(report)
+
+    def get(self, report_id):
+        for report in reversed(self.puts):
+            if report.report_id == report_id:
+                return report
+        return None
+
+
+def test_update_file_throttles_persistent_writes_until_flush():
+    clock = [0.0]
+    store = RecordingPersistentStore()
+    reg = ReportRegistry(
+        persistent_store=store,
+        monotonic=lambda: clock[0],
+        persistent_update_interval=2.0,
+    )
+    report = build_scan_report(
+        Path("/scan"),
+        [_result("a.sh"), _result("b.sh"), _result("c.sh")],
+        online=True,
+        upload_consent=False,
+    )
+    reg.put(report)
+
+    reg.update_file(report.report_id, 0, _result("a.sh"))
+    reg.update_file(report.report_id, 1, _result("b.sh"))
+    reg.update_file(report.report_id, 2, _result("c.sh"))
+
+    assert len(store.puts) == 1
+
+    reg.flush(report.report_id)
+
+    assert len(store.puts) == 2
+    assert store.puts[-1].report_id == report.report_id

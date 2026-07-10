@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from hscanner.exporters import export_report, render_csv, render_html, render_json
+from hscanner.exporters import (
+    ExportError,
+    export_report,
+    render_csv,
+    render_export,
+    render_html,
+    render_json,
+)
 from hscanner.models import (
     Classification,
     ClassificationBucket,
@@ -114,6 +121,18 @@ def test_csv_guards_new_and_technical_fields_against_spreadsheet_injection(repor
     assert row["classification_reason"].startswith("'")
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    ["-cmd.sh", "@cmd.sh", " \t=cmd.sh", "\tplain.txt", "\rplain.txt"],
+)
+def test_csv_guards_relative_path_against_spreadsheet_injection(report, relative_path) -> None:
+    file = replace(report.files[0], relative_path=relative_path)
+
+    row = next(csv.DictReader(io.StringIO(render_csv(replace(report, files=(file,))))))
+
+    assert row["relative_path"].startswith("'")
+
+
 def test_html_is_self_contained_and_escaped(report) -> None:
     html = render_html(report)
     assert "HSCANNER TRIAGE REPORT" in html
@@ -166,7 +185,40 @@ def test_atomic_failure_preserves_existing_destination(tmp_path, report, monkeyp
 
     monkeypatch.setattr("hscanner.exporters.render_json", _boom)
 
-    with pytest.raises(ValueError, match="bad"):
+    with pytest.raises(ExportError, match="bad"):
         export_report(report, output)
 
     assert output.read_text(encoding="utf-8") == "original"
+
+
+def test_non_utf8_filename_surrogate_exports_all_formats(tmp_path, report) -> None:
+    bad_name = "evil\udcff.txt"
+    file = replace(
+        report.files[0],
+        relative_path=bad_name,
+        json_reference="/files/0/raw_result",
+    )
+    report = replace(report, files=(file,))
+
+    assert json.loads(render_json(report))["files"][0]["relative_path"] == bad_name
+    assert render_html(report).encode("utf-8")
+    assert render_csv(report).encode("utf-8")
+
+    for suffix in (".json", ".html", ".csv"):
+        data, _ = render_export(report, suffix)
+        assert data
+        output = tmp_path / f"report{suffix}"
+        export_report(report, output)
+        assert output.read_bytes()
+
+
+def test_export_report_wraps_render_encoding_errors(tmp_path, report, monkeypatch) -> None:
+    output = tmp_path / "report.html"
+
+    def _bad_render(value, suffix):
+        raise UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogate")
+
+    monkeypatch.setattr("hscanner.exporters.render_export", _bad_render)
+
+    with pytest.raises(ExportError):
+        export_report(report, output)

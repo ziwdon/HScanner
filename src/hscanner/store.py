@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
 GLOBAL_SCHEMA_VERSION = 2
@@ -58,19 +59,54 @@ def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Some sandboxed or read-only-adjacent state dirs allow opening the DB
+        # but reject WAL sidecar creation. Keep the store usable; callers treat
+        # persistence/cache failures as non-fatal.
+        pass
     return conn
 
 
 def _init_schema(conn: sqlite3.Connection, ddl: str, version: int) -> None:
     conn.executescript(ddl)
+    if ddl == _SCAN_DDL:
+        _migrate_scan_schema(conn)
     if conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 0:
         conn.execute("INSERT INTO schema_meta (version) VALUES (?)", (version,))
     conn.commit()
 
 
+def _migrate_scan_schema(conn: sqlite3.Connection) -> None:
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(file_state)").fetchall()
+    }
+    columns = {
+        "engine_id": "TEXT",
+        "engine_state": "TEXT",
+        "lookup_status": "TEXT",
+        "upload_status": "TEXT",
+        "action": "TEXT",
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE file_state ADD COLUMN {name} {definition}")
+
+
 def open_global_store(base_dir: Path | None = None) -> sqlite3.Connection:
-    conn = _connect(global_store_path(base_dir))
+    path = global_store_path(base_dir)
+    try:
+        conn = _connect(path)
+        _init_schema(conn, _GLOBAL_DDL, GLOBAL_SCHEMA_VERSION)
+        return conn
+    except sqlite3.Error:
+        if base_dir is not None:
+            raise
+    fallback_base = Path(tempfile.gettempdir()) / "hscanner-state"
+    conn = _connect(global_store_path(fallback_base))
     _init_schema(conn, _GLOBAL_DDL, GLOBAL_SCHEMA_VERSION)
     return conn
 

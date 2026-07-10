@@ -26,7 +26,7 @@ from hscanner.engines.registry import (
 from hscanner.errors import ErrorCode
 from hscanner.exporters import render_export
 from hscanner.hash import read_magic
-from hscanner.inventory import record_from_path
+from hscanner.inventory import InventoryPathError, record_from_path
 from hscanner.keys import clear_saved_api_key, load_saved_api_key, resolve_api_key, save_api_key
 from hscanner.models import (
     Classification,
@@ -140,7 +140,7 @@ async def scan_folder(
     bypass_low_risk: bool = Form(True),
     engine: str = Form("virustotal"),
 ) -> HTMLResponse:
-    has_required_keys = False
+    has_required_keys = any(_has_key(request, eid) for eid in ENGINES)
 
     def _index_error(message: str, status: int):
         return templates.TemplateResponse(
@@ -174,7 +174,10 @@ async def scan_folder(
     missing = [engine_id for engine_id, key in keys.items() if key is None]
     has_required_keys = not missing
 
-    if not Path(folder).is_dir():
+    scan_root = Path(folder).expanduser().resolve()
+    if scan_root.exists() and not scan_root.is_dir():
+        return _index_error(f"{scan_root} is a file, not a folder.", 400)
+    if not scan_root.is_dir():
         return _index_error("That folder doesn't exist on this machine.", 400)
 
     # A key is required: without it HScanner can do no engine work at all.
@@ -222,12 +225,12 @@ async def scan_folder(
         global_store = open_global_store()
         try:
             cache = EngineCache(global_store, ttl_days=quota.cache_ttl_days)
-            scan_state = ScanState(open_scan_store(Path(folder)), Path(folder))
+            scan_state = ScanState(open_scan_store(scan_root), scan_root)
             scan_state.start_or_resume(resume=False)
             rotation = _build_rotation(global_store)
             try:
                 return await run_online_scan(
-                    Path(folder),
+                    scan_root,
                     rotation,
                     upload_consent=False,
                     bypass_low_risk=bypass_low_risk,
@@ -245,7 +248,7 @@ async def scan_folder(
     def _finalize(outcome) -> str:
         is_combined = engine == "combined"
         report = build_scan_report(
-            Path(folder),
+            scan_root,
             outcome.results,
             online=True,
             upload_consent=False,
@@ -544,6 +547,8 @@ async def scan_report_file(request: Request, report_id: str, index: int) -> Resp
             return JSONResponse({"reason": "too_large"}, status_code=400)
     except FileNotFoundError:
         return JSONResponse({"reason": "vanished"}, status_code=400)
+    except InventoryPathError:
+        return JSONResponse({"reason": "invalid_path"}, status_code=400)
 
     manager = request.app.state.file_scan_manager
 
@@ -673,7 +678,7 @@ def scan_unverified_events(request: Request, report_id: str, job_id: str) -> Res
     async def _stream():
         queue = job.subscribe()
         try:
-            for event in job.history:
+            for event in job.replay_events():
                 yield _sse(event)
             while not job.is_terminal:
                 yield _sse(await queue.get())
@@ -738,7 +743,7 @@ def _batch_progress_payload(request: Request, report_id: str, job) -> dict:
 def _clone_result_for_report_file(root: Path, file, source: FileResult) -> FileResult | None:
     try:
         record = record_from_path(root, file.relative_path)
-    except FileNotFoundError:
+    except (FileNotFoundError, InventoryPathError):
         return None
     result = FileResult(
         record=record,
@@ -776,8 +781,8 @@ def _clone_result_for_report_file(root: Path, file, source: FileResult) -> FileR
 def _record_for_report_file(root: Path, file) -> FileRecord:
     try:
         return record_from_path(root, file.relative_path)
-    except FileNotFoundError:
-        path = root / file.relative_path
+    except (FileNotFoundError, InventoryPathError):
+        path = root / Path(file.relative_path).name
         return FileRecord(
             root=root,
             path=path,
@@ -822,6 +827,7 @@ async def _run_scan_unverified_batch(
     registry = request.app.state.report_registry
     initial_report = registry.get(report_id)
     if initial_report is None:
+        registry.flush(report_id)
         job.emit({"state": "error", "error": "report expired or unavailable"})
         return
     root = Path(initial_report.root)
@@ -855,6 +861,7 @@ async def _run_scan_unverified_batch(
         })
         for group_indices in groups.values():
             if job.cancel_requested:
+                registry.flush(report_id)
                 job.emit({
                     "state": "cancelled",
                     "processed": processed,
@@ -864,6 +871,7 @@ async def _run_scan_unverified_batch(
                 return
             report = registry.get(report_id)
             if report is None:
+                registry.flush(report_id)
                 job.emit({"state": "error", "error": "report expired or unavailable"})
                 return
             representative = report.files[group_indices[0]]
@@ -924,6 +932,7 @@ async def _run_scan_unverified_batch(
                         ),
                     })
                 if job.cancel_requested:
+                    registry.flush(report_id)
                     job.emit({
                         "state": "cancelled",
                         "processed": processed,
@@ -943,6 +952,26 @@ async def _run_scan_unverified_batch(
                     else _clone_result_for_report_file(root, current.files[index], result)
                 )
                 if update_result is None:
+                    update_result = _error_result_for_report_file(
+                        root,
+                        current.files[index],
+                        ErrorCode.FILE_VANISHED,
+                    )
+                    updated = registry.update_file(report_id, index, update_result)
+                    processed += 1
+                    job.emit({
+                        "state": "file_error",
+                        "current_index": index,
+                        "current_path": current.files[index].relative_path,
+                        "processed": processed,
+                        "total": len(indices),
+                        "summary": _summary_payload(updated),
+                        **(
+                            _live_file_payload(updated.files[index])
+                            if updated is not None and 0 <= index < len(updated.files)
+                            else {}
+                        ),
+                    })
                     continue
                 registry.update_file(report_id, index, update_result)
                 processed += 1
@@ -962,6 +991,7 @@ async def _run_scan_unverified_batch(
                     ),
                 })
             if job.cancel_requested:
+                registry.flush(report_id)
                 job.emit({
                     "state": "cancelled",
                     "processed": processed,
@@ -970,6 +1000,7 @@ async def _run_scan_unverified_batch(
                 })
                 return
 
+        registry.flush(report_id)
         job.emit({
             "state": "done",
             "processed": processed,

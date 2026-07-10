@@ -27,7 +27,7 @@ matching:
 buckets:
   sensitive:
     extensions: []
-    filename_patterns: [".env", "*.pem", "*.key", "*secret*", "*secrets*"]
+    filename_patterns: [".env", ".env.*", "*.pem", "*.key", "*secret*", "*secrets*"]
     reason: "sensitive"
 
   skipped:

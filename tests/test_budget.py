@@ -1,6 +1,15 @@
+import sqlite3
+
 import pytest
 
-from hscanner.budget import BudgetExhausted, RequestBudget, RequestKind, RequestMetrics
+from hscanner.budget import (
+    BudgetExhausted,
+    QuotaCounter,
+    QuotaStopReason,
+    RequestBudget,
+    RequestKind,
+    RequestMetrics,
+)
 
 
 class FakeClock:
@@ -143,3 +152,29 @@ async def test_pacing_seconds_remaining_is_read_only() -> None:
     budget.pacing_seconds_remaining()
     assert budget.total == 2  # peeking did not consume window slots
     assert len(budget._window) == 2
+
+
+class FailingQuotaConnection:
+    def execute(self, *args, **kwargs):
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    def commit(self):
+        raise AssertionError("commit should not run after failed execute")
+
+
+async def test_quota_record_failure_does_not_abort_request_acquire() -> None:
+    counter = QuotaCounter(FailingQuotaConnection())
+    budget = RequestBudget(quota=counter)
+
+    await budget.acquire(RequestKind.LOOKUP)
+
+    assert budget.counts[RequestKind.LOOKUP] == 1
+
+
+async def test_quota_record_failure_keeps_session_counts_for_limits() -> None:
+    counter = QuotaCounter(FailingQuotaConnection(), daily=1, monthly=10)
+    budget = RequestBudget(quota=counter)
+
+    await budget.acquire(RequestKind.LOOKUP)
+
+    assert counter.exhausted_reasons() == (QuotaStopReason.DAILY,)

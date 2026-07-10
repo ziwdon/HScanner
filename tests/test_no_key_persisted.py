@@ -142,6 +142,59 @@ async def test_api_key_absent_from_job_snapshot_and_state(tmp_path):
     assert SECRET not in blob
 
 
+async def test_configured_api_key_absent_from_reports_db_after_web_scan(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    class FakeKeyring:
+        def get_password(self, service: str, username: str) -> str:
+            return SECRET
+
+    class CapturingVTClient:
+        from hscanner.engines.base import EngineInfo
+        info = EngineInfo(id="virustotal", display_name="VirusTotal", default_per_minute=4)
+
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+        async def get_file_report(self, sha256: str):
+            return None
+
+        def metrics_snapshot(self):
+            from hscanner.budget import RequestMetrics
+
+            return RequestMetrics.zero()
+
+        async def close(self) -> None:
+            return None
+
+    received_keys: list[str] = []
+
+    def client_factory(engine_id: str, api_key: str) -> CapturingVTClient:
+        received_keys.append(api_key)
+        return CapturingVTClient(api_key)
+
+    (tmp_path / "scan").mkdir()
+    (tmp_path / "scan" / "a.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    app = create_app(keyring_module=FakeKeyring(), engine_factory=client_factory)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/scan", data={"folder": str(tmp_path / "scan"), "upload_eligible": "false"}
+        )
+
+    assert response.status_code == 200
+    match = re.search(r'data-job-id="([^"]+)"', response.text)
+    assert match is not None
+    job = app.state.job_manager.get(match.group(1))
+    assert job is not None
+    assert job.task is not None
+    await job.task
+
+    db_path = tmp_path / "state" / "hscanner" / "reports.db"
+    assert received_keys == [SECRET]
+    assert db_path.exists()
+    assert SECRET.encode() not in db_path.read_bytes()
+
+
 # ---------------------------------------------------------------------------
 # Per-file on-demand scan: API key must not appear in any export surface
 # ---------------------------------------------------------------------------

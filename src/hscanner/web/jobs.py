@@ -338,6 +338,8 @@ class FileScanManager:
 
 
 class BatchFileScanJob:
+    HISTORY_LIMIT = 200
+
     def __init__(
         self,
         job_id: str,
@@ -374,6 +376,8 @@ class BatchFileScanJob:
             self.state = state
         self.last_event = event
         self.history.append(event)
+        if len(self.history) > self.HISTORY_LIMIT:
+            self.history = self.history[-self.HISTORY_LIMIT:]
         for queue in self._subscribers:
             try:
                 queue.put_nowait(event)
@@ -387,6 +391,17 @@ class BatchFileScanJob:
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._subscribers.discard(queue)
+
+    def replay_events(self) -> list[dict[str, object]]:
+        return [
+            {
+                "state": "snapshot",
+                "job_id": self.id,
+                "report_id": self.report_id,
+                "last": self.last_event,
+            },
+            *self.history,
+        ]
 
     def cancel(self) -> None:
         self.cancel_requested = True

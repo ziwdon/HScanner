@@ -92,3 +92,35 @@ def test_registry_loads_report_from_persistent_store_on_memory_miss(
     assert restored is not None
     assert restored.report_id == report.report_id
     assert restored.generated_at == report.generated_at
+
+
+class FailingPersistentStore:
+    def put(self, report):
+        raise OSError("persistent store is unavailable")
+
+    def get(self, report_id):
+        raise OSError("persistent store is unavailable")
+
+    def list_reports(self):
+        raise OSError("persistent store is unavailable")
+
+
+def test_registry_put_keeps_in_memory_report_when_persistent_write_fails(report) -> None:
+    registry = ReportRegistry(persistent_store=FailingPersistentStore())
+
+    registry.put(report)
+
+    assert registry.get(report.report_id) is report
+
+
+def test_registry_memory_miss_ignores_persistent_read_failure() -> None:
+    registry = ReportRegistry(persistent_store=FailingPersistentStore())
+
+    assert registry.get("missing") is None
+
+
+def test_registry_list_ignores_persistent_list_failure(report) -> None:
+    registry = ReportRegistry(persistent_store=FailingPersistentStore())
+    registry.put(report)
+
+    assert registry.list_reports() == [report]

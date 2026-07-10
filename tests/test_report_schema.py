@@ -14,6 +14,8 @@ from hscanner.models import (
     LookupStatus,
     OutcomeReason,
     ReportAction,
+    ReportCategory,
+    RiskLabel,
     ScanOutcome,
     ScanStatus,
 )
@@ -191,3 +193,31 @@ def test_report_payload_round_trips_to_scan_report(make_result) -> None:
     assert restored.files[0].raw_result == {
         "scan_results": {"total_avs": 2, "total_detected_avs": 0}
     }
+
+
+def test_legacy_infected_payload_derives_matching_medium_fields(make_result) -> None:
+    from hscanner.report import scan_report_from_payload
+
+    result = make_result("sample.sh")
+    result.lookup_status = LookupStatus.FOUND
+    result.engine_state = EngineState.FOUND
+    result.assessment_complete = True
+    result.engine_stats = {"malicious": 0, "suspicious": 1, "undetected": 4}
+    classify_report_result(result)
+    report = build_scan_report(
+        Path("/scan"),
+        [result],
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "report-id",
+        now=lambda: FIXED_TIME,
+    )
+    payload = report_payload(report)
+    payload["files"][0].pop("risk_label", None)
+    payload["files"][0].pop("report_category", None)
+
+    restored = scan_report_from_payload(payload)
+
+    assert restored.files[0].outcome == ScanOutcome.INFECTED.value
+    assert restored.files[0].risk_label == RiskLabel.MEDIUM.value
+    assert restored.files[0].report_category == ReportCategory.MEDIUM.value

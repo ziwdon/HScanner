@@ -71,7 +71,7 @@ def _build_engine_client(
     )
 
 
-def _build_combined_rotation(policy, max_requests, *, wait_threshold):
+def _combined_keys() -> tuple[dict[str, str], list[str]]:
     keys: dict[str, str] = {}
     missing: list[str] = []
     for engine_id in COMBINED_ENGINE_IDS:
@@ -82,11 +82,10 @@ def _build_combined_rotation(policy, max_requests, *, wait_threshold):
             missing.append(engine_id)
         else:
             keys[engine_id] = key
-    if missing:
-        names = ", ".join(ENGINES[engine_id].display_name for engine_id in missing)
-        typer.echo(f"Missing API key for: {names}. Add it in Settings/keyring.", err=True)
-        raise typer.Exit(3)
+    return keys, missing
 
+
+def _build_combined_rotation(keys, policy, max_requests, *, wait_threshold):
     engines = [
         _build_engine_client(keys[engine_id], policy, max_requests, engine_id=engine_id)
         for engine_id in COMBINED_ENGINE_IDS
@@ -202,18 +201,28 @@ def scan(
     api_key = None
     if engine != "combined":
         api_key = resolve_api_key(engine, lambda: load_saved_api_key(engine))
+        missing_engine_ids = [engine] if api_key is None else []
+    else:
+        combined_keys, missing_engine_ids = _combined_keys()
 
-    if engine != "combined" and api_key is None:
+    if missing_engine_ids:
+        names = ", ".join(ENGINES[engine_id].display_name for engine_id in missing_engine_ids)
+        typer.echo(
+            f"Missing API key for: {names}. Running local-only inventory.",
+            err=True,
+        )
         local_results = run_local_scan(path)
         finalize_unchecked_results(local_results, bypass_low_risk=bypass_low_risk)
         status = ScanStatus.KEY_MISSING if require_engine else ScanStatus.COMPLETED
+        report_engine_id = "combined" if engine == "combined" else engine
+        report_engine_name = "Combined" if engine == "combined" else ENGINES[engine].display_name
         report = build_scan_report(
             path,
             local_results,
             online=False,
             upload_consent=False,
-            engine_id=engine,
-            engine_name=ENGINES[engine].display_name,
+            engine_id=report_engine_id,
+            engine_name=report_engine_name,
             status=status,
         )
         _export_and_emit(report, report_path, json_output)
@@ -229,7 +238,7 @@ def scan(
     )
     if engine == "combined":
         rotation = _build_combined_rotation(
-            policy, effective_max_requests, wait_threshold=wait_threshold
+            combined_keys, policy, effective_max_requests, wait_threshold=wait_threshold
         )
     else:
         client = _build_engine_client(

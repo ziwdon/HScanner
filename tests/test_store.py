@@ -41,3 +41,11 @@ def test_reopening_is_idempotent(tmp_path):
     open_global_store(base_dir=tmp_path).close()
     conn = open_global_store(base_dir=tmp_path)  # must not error or duplicate
     assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
+
+
+def test_store_connections_set_busy_timeout(tmp_path):
+    global_conn = open_global_store(base_dir=tmp_path / "global")
+    scan_conn = open_scan_store(tmp_path / "scan")
+
+    assert global_conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 5000
+    assert scan_conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 5000

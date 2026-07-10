@@ -10,6 +10,8 @@ which each engine's ``__init__`` must set:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,8 @@ import httpx
 from hscanner.budget import RequestKind
 from hscanner.errors import ErrorCode, HScannerError
 from hscanner.progress import ScanStage
+
+MAX_RETRY_AFTER_SECONDS = 300.0
 
 
 class EngineHttpMixin:
@@ -97,9 +101,18 @@ class EngineHttpMixin:
                         "engine rate limit reached",
                         retry_after=retry_after,
                     )
+                if (
+                    retry_after is not None
+                    and retry_after > MAX_RETRY_AFTER_SECONDS
+                ):
+                    raise HScannerError(
+                        ErrorCode.ENGINE_RATE_LIMITED,
+                        "engine rate limit reached",
+                        retry_after=retry_after,
+                    )
                 delay = retry_after if retry_after is not None else self._backoff(attempt)
                 self._notify_wait(delay, ScanStage.WAITING_RATE_LIMIT)
-                await self._sleep(delay)
+                await self._sleep_with_checkpoints(delay)
                 self.rate_limit_wait_count += 1
                 self.rate_limit_wait_seconds += delay
                 attempt += 1
@@ -115,13 +128,28 @@ class EngineHttpMixin:
     def _backoff(self, attempt: int) -> float:
         return self.backoff_base * (2**attempt)
 
+    async def _sleep_with_checkpoints(self, seconds: float) -> None:
+        remaining = seconds
+        while remaining > 0:
+            await self._checkpoint()
+            step = min(1.0, remaining)
+            await self._sleep(step)
+            await self._checkpoint()
+            remaining -= step
+
     def _retry_after_header(self, response: httpx.Response) -> float | None:
         header = response.headers.get("Retry-After")
         if header:
             try:
                 return float(header)
             except ValueError:
-                return None
+                try:
+                    retry_at = parsedate_to_datetime(header)
+                except (TypeError, ValueError):
+                    return None
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                return max((retry_at - datetime.now(UTC)).total_seconds(), 0.0)
         return None
 
     def metrics_snapshot(self):

@@ -67,21 +67,21 @@ def classify_report_result(result: FileResult) -> FileResult:
             result.outcome_reason = OutcomeReason.INCOMPLETE_ENGINE_RESULT
         elif result.outcome_reason == OutcomeReason.LOW_RISK:
             result.outcome = ScanOutcome.SKIPPED
+            result.risk_label = RiskLabel.SKIPPED
+            result.report_category = ReportCategory.SKIPPED
+            return result
         else:
             result.outcome = ScanOutcome.NEEDS_ATTENTION
             result.outcome_reason = OutcomeReason.SCAN_INCOMPLETE
         if malicious >= 3:
             result.risk_label = RiskLabel.HIGH
             result.report_category = ReportCategory.HIGH
-        elif malicious in {1, 2} or suspicious >= 2:
+        elif malicious in {1, 2} or suspicious >= 1 or result.detections:
             result.risk_label = RiskLabel.MEDIUM
             result.report_category = ReportCategory.MEDIUM
         elif bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED:
             result.risk_label = RiskLabel.MEDIUM
             result.report_category = ReportCategory.UPLOAD_BLOCKED
-        elif malicious == 0 and suspicious == 1:
-            result.risk_label = RiskLabel.LOW
-            result.report_category = ReportCategory.LOW
         elif bucket == ClassificationBucket.UPLOAD_CANDIDATE and result.engine_state in {
             EngineState.NOT_FOUND,
             EngineState.NOT_QUERIED,
@@ -457,7 +457,8 @@ def _report_category_from_payload(file: dict[str, Any]) -> str:
     outcome = file.get("outcome")
     reason = file.get("outcome_reason")
     if outcome == ScanOutcome.INFECTED.value:
-        return ReportCategory.HIGH.value
+        flagged = (file.get("detection_ratio") or {}).get("flagged") or 0
+        return ReportCategory.HIGH.value if flagged >= 3 else ReportCategory.MEDIUM.value
     if outcome == ScanOutcome.NO_DETECTIONS.value:
         return ReportCategory.NO_DETECTIONS.value
     if outcome == ScanOutcome.SKIPPED.value:
