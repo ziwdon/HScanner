@@ -110,7 +110,7 @@ visible. Verified 2026-06-20 with 94 passing tests and a clean Ruff run.
 - **Web report registry** (`ReportRegistry` in `src/hscanner/web/report_store.py`, installed on
   `app.state` by `create_app`): bounded in-memory store backed by non-fatal persistent history
   (`PersistentReportStore` in `src/hscanner/web/persistent_reports.py`). The history database is
-  `$XDG_STATE_HOME/hscanner/reports.db` (or the platform state-dir equivalent), with 7-day
+  `$XDG_STATE_HOME/hscanner/reports.db` (or the platform state-dir equivalent), with 30-day
   access-based retention and fall-through loading from `/history` and report URLs. Persistent-store
   startup, read, and write failures degrade to memory-only behavior; finished scans must not be
   lost or marked failed because `reports.db` is corrupt, locked, or unwritable. The memory tier

@@ -64,7 +64,7 @@ def test_history_page_empty_state() -> None:
 
     assert response.status_code == 200
     assert "Scan history" in response.text
-    assert "Reports are stored locally and expire after 7 days without access." in response.text
+    assert "Reports are stored locally and expire after 30 days without access." in response.text
     assert "No stored reports" in response.text
     assert 'class="navlink active" href="/history"' in response.text
 

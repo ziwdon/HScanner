@@ -39,7 +39,7 @@ class PersistentReportStore:
         self,
         *,
         path: Path | None = None,
-        retention_seconds: float = 7 * 24 * 3600,
+        retention_seconds: float = 30 * 24 * 3600,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.path = path or default_report_store_path()

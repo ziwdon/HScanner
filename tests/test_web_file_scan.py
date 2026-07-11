@@ -6,6 +6,7 @@ TDD tests for per-file scan endpoints:
   POST   /reports/{id}/scan-unverified
 """
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -16,6 +17,8 @@ from hscanner.models import EngineState, LookupStatus, ReportAction
 from hscanner.report import build_scan_report, classify_report_result
 from hscanner.scanner import run_local_scan
 from hscanner.web.app import create_app
+from hscanner.web.jobs import BatchFileScanJob
+from hscanner.web.routes import scan_unverified_events
 
 # ---------------------------------------------------------------------------
 # Shared fakes
@@ -94,6 +97,31 @@ def _parse_sse(body: str) -> list[dict]:
         for line in body.splitlines()
         if line.startswith("data: ")
     ]
+
+
+async def test_batch_sse_delivers_terminal_event_emitted_after_replay():
+    """A terminal event must not be lost between replay and the next queue read."""
+    job = BatchFileScanJob("batch-id", "report-id", [0])
+    job.emit({"state": "running", "processed": 0, "total": 1})
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                batch_file_scan_manager=SimpleNamespace(get=lambda job_id: job)
+            )
+        )
+    )
+
+    response = scan_unverified_events(request, "report-id", job.id)
+    stream = response.body_iterator
+    assert _parse_sse(await anext(stream))[0]["state"] == "snapshot"
+    assert _parse_sse(await anext(stream))[0]["state"] == "queued"
+    assert _parse_sse(await anext(stream))[0]["state"] == "running"
+
+    job.emit({"state": "file_done", "processed": 1, "total": 1})
+    job.emit({"state": "done", "processed": 1, "total": 1})
+
+    assert _parse_sse(await anext(stream))[0]["state"] == "file_done"
+    assert _parse_sse(await anext(stream))[0]["state"] == "done"
 
 
 # ---------------------------------------------------------------------------
