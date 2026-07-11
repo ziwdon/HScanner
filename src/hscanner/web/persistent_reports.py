@@ -72,12 +72,24 @@ class PersistentReportStore:
             ).fetchone()
             if row is None:
                 return None
-            conn.execute(
-                "UPDATE reports SET last_accessed_at=? WHERE report_id=?",
-                (_utc_text(self._now()), report_id),
-            )
+            self._touch(conn, report_id)
             conn.commit()
         return scan_report_from_payload(json.loads(row["payload"]))
+
+    def touch(self, report_id: str) -> bool:
+        """Record a report access without loading its payload.
+
+        Cached report pages still count as access for persistent retention.
+        """
+        self.delete_expired()
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM reports WHERE report_id=?", (report_id,)
+            ).fetchone() is None:
+                return False
+            self._touch(conn, report_id)
+            conn.commit()
+        return True
 
     def list_reports(self) -> list[ScanReport]:
         self.delete_expired()
@@ -108,6 +120,12 @@ class PersistentReportStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    def _touch(self, conn: sqlite3.Connection, report_id: str) -> None:
+        conn.execute(
+            "UPDATE reports SET last_accessed_at=? WHERE report_id=?",
+            (_utc_text(self._now()), report_id),
+        )
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

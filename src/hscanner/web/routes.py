@@ -94,6 +94,7 @@ def history(request: Request) -> HTMLResponse:
 
 def _history_report_item(report) -> dict:
     no_detections = sum(file.outcome == "no_detections" for file in report.files)
+    skipped = sum(file.outcome == "skipped" for file in report.files)
     return {
         "report_id": report.report_id,
         "root": report.root,
@@ -105,6 +106,7 @@ def _history_report_item(report) -> dict:
             "infected": report.summary.infected,
             "needs_attention": report.summary.needs_attention,
             "no_detections": no_detections,
+            "skipped": skipped,
             "errors": report.summary.errors,
         },
     }
@@ -620,7 +622,12 @@ async def scan_unverified(request: Request, report_id: str) -> Response:
     existing = manager.active_for_report(report_id)
     if existing is not None:
         return JSONResponse(
-            {"job_id": existing.id, "indices": existing.indices, "active": True},
+            {
+                "job_id": existing.id,
+                "indices": existing.indices,
+                "current_path": report.files[existing.indices[0]].relative_path,
+                "active": True,
+            },
             status_code=202,
         )
 
@@ -649,7 +656,12 @@ async def scan_unverified(request: Request, report_id: str) -> Response:
         job = manager.enqueue(report_id, indices, _runner)
     except JobBusy:
         return JSONResponse({"error": "a scan is already in progress"}, status_code=409)
-    return JSONResponse({"job_id": job.id, "indices": indices, "active": False}, status_code=202)
+    return JSONResponse({
+        "job_id": job.id,
+        "indices": indices,
+        "current_path": report.files[indices[0]].relative_path,
+        "active": False,
+    }, status_code=202)
 
 
 @router.get("/reports/{report_id}/scan-unverified/active")
@@ -665,6 +677,7 @@ def active_scan_unverified(request: Request, report_id: str) -> Response:
     return JSONResponse({
         "active": not job.is_terminal,
         "job_id": job.id,
+        "indices": job.indices,
         "last": job.last_event,
     })
 
@@ -861,6 +874,8 @@ async def _run_scan_unverified_batch(
             "total": len(indices),
             "processed": processed,
             "groups": len(groups),
+            "current_index": indices[0],
+            "current_path": initial_report.files[indices[0]].relative_path,
             "summary": _summary_payload(registry.get(report_id)),
         })
         for group_indices in groups.values():

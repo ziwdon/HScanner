@@ -22,6 +22,7 @@
       <span {% if report.summary.infected %}class="alert"{% endif %}>{{ report.summary.infected }} infected</span>
       <span {% if report.summary.needs_attention %}class="alert"{% endif %}>{{ report.summary.needs_attention }} needs attention</span>
       <span>{{ report.summary.no_detections }} no detections</span>
+      <span>{{ report.summary.skipped }} skipped</span>
       <span>{{ report.summary.errors }} errors</span>
     </div>
   </a>

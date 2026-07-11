@@ -91,6 +91,7 @@ def test_history_page_lists_stored_reports() -> None:
     assert 'href="/reports/history-report"' in response.text
     assert "0 infected" in response.text
     assert "0 needs attention" in response.text
+    assert "0 skipped" in response.text
 
 
 class FakeKeyring:
@@ -435,6 +436,8 @@ async def test_scan_renders_outcome_report_with_navigation(tmp_path) -> None:
     assert 'id="cancel-upload"' in response.text
     assert 'data-summary-key="needs_attention"' in response.text
     assert "const SECTION_META =" in response.text
+    assert "const FILE_PATHS =" in response.text
+    assert "const BATCH_CANDIDATE_PATHS =" in response.text
     assert "const SECTION_ORDER =" in response.text
     assert "Pinned to report_view._OUTCOME_ORDER" in response.text
     assert "insertBefore" in response.text
@@ -444,7 +447,7 @@ async def test_scan_renders_outcome_report_with_navigation(tmp_path) -> None:
     assert "batchCancelRequested" in response.text
     assert "batchTerminalReceived" in response.text
     assert "if (batchTerminalReceived) return;" in response.text
-    assert "Cancellation requested. Waiting for server confirmation" in response.text
+    assert "Waiting for server confirmation" in response.text
     assert "/scan-unverified/active" in response.text
     assert "/cancel" in response.text
     assert "tool.sh" in response.text

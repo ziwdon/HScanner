@@ -298,6 +298,7 @@ def test_scan_unverified_returns_expected_indices(tmp_path, monkeypatch):
     assert resp.status_code == 202, resp.text
     data = resp.json()
     assert "indices" in data
+    assert data["current_path"] == "tool.sh"
 
     idx_tool = _idx(report, "tool.sh")
     assert idx_tool in data["indices"], (
@@ -335,6 +336,12 @@ def test_scan_unverified_batch_updates_report_via_single_sse_stream(tmp_path, mo
 
     assert events[-1]["state"] == "done"
     assert events[-1]["summary"]["needs_attention"] == 0
+    running = next(
+        event
+        for event in events
+        if event.get("state") == "running" and "current_path" in event
+    )
+    assert running["current_path"] == "tool.sh"
     updated = app.state.report_registry.get(report.report_id)
     assert updated.files[idx].outcome == "no_detections"
 

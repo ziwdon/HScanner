@@ -165,6 +165,12 @@ def build_report_view(
         "section_meta": {
             outcome: outcome_section_meta(outcome) for outcome in _OUTCOME_ORDER
         },
+        "file_paths": {file.index: file.relative_path for file in report.files},
+        "batch_candidate_paths": [
+            file.relative_path
+            for file in report.files
+            if file.outcome in {"needs_attention", "error"} and file.upload_eligible
+        ],
         "request_metrics": report.request_metrics,
         "engine_breakdown": dict(report.engine_breakdown),
         "quota_stop_reasons": report.quota_stop_reasons,

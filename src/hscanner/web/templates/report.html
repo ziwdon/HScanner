@@ -85,6 +85,8 @@
 <script>
 const REPORT_ID = {{ view.report_id | tojson }};
 const SECTION_META = {{ view.section_meta | tojson }};
+const FILE_PATHS = {{ view.file_paths | tojson }};
+const BATCH_CANDIDATE_PATHS = {{ view.batch_candidate_paths | tojson }};
 // Pinned to report_view._OUTCOME_ORDER.
 const SECTION_ORDER = ['infected', 'needs_attention', 'no_detections', 'skipped', 'error'];
 const uploadProgress = document.getElementById('upload-progress');
@@ -100,6 +102,11 @@ let batchCancelRequested = false;
 let batchTerminalReceived = false;
 let lastBatchDone = 0;
 let lastBatchTotal = 0;
+let lastBatchPath = null;
+
+function filePath(index) {
+  return FILE_PATHS[String(index)] || null;
+}
 
 function sectionMeta(outcome) {
   return SECTION_META[outcome] || {outcome, id: outcome, title: outcome, sev: 'sev-unknown'};
@@ -209,13 +216,15 @@ function applyBatchEvent(data) {
   const done = data.processed || 0;
   const total = data.total || 0;
   const state = data.state || 'running';
-  const current = data.current_path ? ` · ${data.current_path}` : '';
+  const currentPath = data.current_path || filePath(data.current_index) || lastBatchPath;
+  if (currentPath) lastBatchPath = currentPath;
+  const current = currentPath ? ` · ${currentPath}` : '';
   const terminal = ['done', 'cancelled', 'error'].includes(state);
   lastBatchDone = done;
   lastBatchTotal = total;
   if (state === 'cancelling') batchCancelRequested = true;
   const detail = batchCancelRequested && !terminal
-    ? 'Cancelling after the current file finishes…'
+    ? `Cancelling after ${currentPath || 'the current file'} finishes…`
     : `${state.replaceAll('_', ' ')}${current}`;
   setUploadProgress(done, total, detail, 'Upload scan progress');
   updateSummaryTiles(data.summary);
@@ -253,7 +262,7 @@ function connectBatch(jobId) {
       setUploadProgress(
         lastBatchDone,
         lastBatchTotal,
-        'Cancellation requested. Waiting for server confirmation…',
+        `Cancellation requested for ${lastBatchPath || 'the current file'}. Waiting for server confirmation…`,
       );
     } else {
       setUploadProgress(0, 0, 'Batch progress connection lost');
@@ -270,6 +279,8 @@ async function reconnectActiveBatch() {
   const body = await responseJson(response);
   if (body.active && body.job_id) {
     setScanAllDisabled(true);
+    lastBatchPath = body.last?.current_path || filePath(body.last?.current_index)
+      || filePath(body.indices?.[0]);
     applyBatchEvent(body.last || {state: 'running', processed: 0, total: 0});
     connectBatch(body.job_id);
   }
@@ -336,15 +347,16 @@ document.addEventListener('click', (event) => {
   const button = event.target.closest('.btn-scan');
   if (!button) return;
   const index = button.dataset.index;
+  const path = filePath(index) || `file ${index}`;
   const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
   button.disabled = true;
-  setUploadProgress(0, 1, `Uploading file ${index}`, 'Single file upload');
+  setUploadProgress(0, 1, `${path} · queued`, 'Single file upload');
   scanFile(index, statusEl, {
-    onState: (state) => setUploadProgress(0, 1, `File ${index}: ${state}`),
-    onError: (reason) => setUploadProgress(0, 1, `File ${index}: ${reason}`),
+    onState: (state) => setUploadProgress(0, 1, `${path} · ${state}`),
+    onError: (reason) => setUploadProgress(0, 1, `${path} · ${reason}`),
   }).then((result) => {
     if (result === 'done') {
-      setUploadProgress(1, 1, `File ${index} completed`, 'Single file upload');
+      setUploadProgress(1, 1, `${path} · completed`, 'Single file upload');
     } else {
       button.disabled = false;
     }
@@ -355,7 +367,12 @@ document.addEventListener('click', async (event) => {
   const button = event.target.closest('.btn-scan-all');
   if (!button) return;
   setScanAllDisabled(true);
-  setUploadProgress(0, 0, 'Preparing upload queue');
+  lastBatchPath = BATCH_CANDIDATE_PATHS[0] || null;
+  setUploadProgress(
+    0,
+    0,
+    lastBatchPath ? `Preparing upload queue · ${lastBatchPath}` : 'Preparing upload queue',
+  );
   let response;
   try {
     response = await fetch(`/reports/${REPORT_ID}/scan-unverified`, {method: 'POST'});
@@ -375,14 +392,23 @@ document.addEventListener('click', async (event) => {
     setScanAllDisabled(false);
     return;
   }
-  setUploadProgress(0, (body.indices || []).length, 'Starting upload queue');
+  lastBatchPath = body.current_path || filePath(body.indices?.[0]);
+  setUploadProgress(
+    0,
+    (body.indices || []).length,
+    lastBatchPath ? `Queued · ${lastBatchPath}` : 'Starting upload queue',
+  );
   connectBatch(body.job_id);
 });
 cancelUpload.addEventListener('click', async () => {
   if (!activeBatchJobId) return;
   batchCancelRequested = true;
   cancelUpload.disabled = true;
-  setUploadProgress(lastBatchDone, lastBatchTotal, 'Cancelling after the current file finishes…');
+  setUploadProgress(
+    lastBatchDone,
+    lastBatchTotal,
+    `Cancelling after ${lastBatchPath || 'the current file'} finishes…`,
+  );
   try {
     const response = await fetch(`/reports/${REPORT_ID}/scan-unverified/${activeBatchJobId}/cancel`, {method: 'POST'});
     if (!response.ok) {

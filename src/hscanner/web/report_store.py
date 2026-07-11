@@ -48,6 +48,7 @@ class ReportRegistry:
             if item is not None:
                 self._reports[report_id] = (now, item[1])
                 self._reports.move_to_end(report_id)
+                self._persistent_touch(report_id)
                 return item[1]
             if self._persistent_store is None:
                 return None
@@ -135,6 +136,14 @@ class ReportRegistry:
         except Exception as exc:
             self._warn_persistent_failure("read", exc)
             return None
+
+    def _persistent_touch(self, report_id: str) -> None:
+        if self._persistent_store is None or not hasattr(self._persistent_store, "touch"):
+            return
+        try:
+            self._persistent_store.touch(report_id)
+        except Exception as exc:
+            self._warn_persistent_failure("access update", exc)
 
     def _persistent_list(self) -> list[ScanReport]:
         if self._persistent_store is None or not hasattr(self._persistent_store, "list_reports"):

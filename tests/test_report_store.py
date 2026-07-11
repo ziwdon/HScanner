@@ -94,6 +94,33 @@ def test_registry_loads_report_from_persistent_store_on_memory_miss(
     assert restored.generated_at == report.generated_at
 
 
+def test_registry_memory_access_refreshes_persistent_retention(tmp_path, report) -> None:
+    class UtcClock:
+        def __init__(self):
+            self.now = datetime(2026, 6, 1, tzinfo=UTC)
+
+        def __call__(self):
+            return self.now
+
+    clock = UtcClock()
+    store = PersistentReportStore(
+        path=tmp_path / "reports.db",
+        retention_seconds=30 * 24 * 3600,
+        now=clock,
+    )
+    registry = ReportRegistry(persistent_store=store)
+    registry.put(report)
+
+    clock.now = datetime(2026, 6, 30, tzinfo=UTC)
+    assert registry.get(report.report_id) is report
+
+    # A fresh registry must still find the row after the original 30-day
+    # deadline because the in-memory access above renewed persistent retention.
+    clock.now = datetime(2026, 7, 2, tzinfo=UTC)
+    restored = ReportRegistry(persistent_store=store).get(report.report_id)
+    assert restored is not None
+
+
 class FailingPersistentStore:
     def put(self, report):
         raise OSError("persistent store is unavailable")
