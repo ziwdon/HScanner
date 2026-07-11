@@ -45,26 +45,22 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
     absolute_limit = policy["size_limits"]["absolute_upload_block_mb"] * 1024 * 1024
     upload_like = _is_upload_like(record, ext, buckets["upload_candidate"])
 
-    if record.size > absolute_limit:
+    if record.size > absolute_limit and upload_like:
         return Classification(
-            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
-            if upload_like
-            else ClassificationBucket.HASH_ONLY,
-            reason="file exceeds absolute upload block" if upload_like else "large file hash-only",
+            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+            reason="file exceeds absolute upload block",
             upload_eligible=False,
             hash_eligible=True,
-            suspicious=upload_like,
+            suspicious=True,
         )
 
-    if record.size > soft_limit:
+    if record.size > soft_limit and upload_like:
         return Classification(
-            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
-            if upload_like
-            else ClassificationBucket.HASH_ONLY,
-            reason="file exceeds soft upload block" if upload_like else "large file hash-only",
+            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+            reason="file exceeds soft upload block",
             upload_eligible=False,
             hash_eligible=True,
-            suspicious=upload_like,
+            suspicious=True,
         )
 
     if _matches_suspicious_block(record, ext, buckets["suspicious_upload_blocked"]):
@@ -93,11 +89,21 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             hash_eligible=True,
         )
 
+    if record.size > soft_limit or record.size > absolute_limit:
+        return Classification(
+            bucket=ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+            reason="unknown file type exceeds upload size limit",
+            upload_eligible=False,
+            hash_eligible=True,
+            suspicious=True,
+        )
+
     return Classification(
-        bucket=ClassificationBucket.HASH_ONLY,
-        reason="default fallback hash-only",
-        upload_eligible=False,
+        bucket=ClassificationBucket.UPLOAD_CANDIDATE,
+        reason="default fallback upload candidate",
+        upload_eligible=True,
         hash_eligible=True,
+        suspicious=True,
     )
 
 

@@ -75,12 +75,23 @@ def test_non_regular_file_has_unsupported_skip_reason() -> None:
     assert result.skip_reason == OutcomeReason.UNSUPPORTED_FILE
 
 
-def test_unknown_extension_falls_back_to_hash_only() -> None:
+def test_unknown_extension_falls_back_to_upload_candidate() -> None:
     result = classify_file(record("sample.xyz"), load_default_policy())
 
-    assert result.bucket == ClassificationBucket.HASH_ONLY
+    assert result.bucket == ClassificationBucket.UPLOAD_CANDIDATE
+    assert result.upload_eligible is True
+    assert result.hash_eligible is True
+    assert result.suspicious is True
+
+
+def test_large_unknown_extension_is_upload_blocked() -> None:
+    size = 300 * 1024 * 1024
+    result = classify_file(record("sample.xyz", size=size), load_default_policy())
+
+    assert result.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
     assert result.upload_eligible is False
     assert result.hash_eligible is True
+    assert result.suspicious is True
 
 
 def test_large_upload_candidate_is_upload_blocked() -> None:
@@ -105,3 +116,34 @@ def test_rpyc_bytecode_is_upload_candidate() -> None:
 
     assert result.bucket == ClassificationBucket.UPLOAD_CANDIDATE
     assert result.upload_eligible is True
+
+
+def test_renpy_extensions_are_upload_candidates() -> None:
+    policy = load_default_policy()
+
+    for name in ("script.rpy", "module.rpym", "module.rpymc", "cache.rpyb", "archive.rpa"):
+        result = classify_file(record(name), policy)
+
+        assert result.bucket == ClassificationBucket.UPLOAD_CANDIDATE, name
+        assert result.upload_eligible is True, name
+        assert result.hash_eligible is True, name
+
+
+def test_large_renpy_archive_is_upload_blocked_but_hashable() -> None:
+    size = 700 * 1024 * 1024
+    result = classify_file(record("archive.rpa", size=size), load_default_policy())
+
+    assert result.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    assert result.upload_eligible is False
+    assert result.hash_eligible is True
+
+
+def test_svg_and_font_extensions_are_hash_only() -> None:
+    policy = load_default_policy()
+
+    for name in ("flag.svg", "font.ttf", "font.otf", "font.ttc"):
+        result = classify_file(record(name), policy)
+
+        assert result.bucket == ClassificationBucket.HASH_ONLY, name
+        assert result.upload_eligible is False, name
+        assert result.hash_eligible is True, name

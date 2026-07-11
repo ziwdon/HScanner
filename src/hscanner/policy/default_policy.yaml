@@ -18,7 +18,7 @@ quota:
   daily_request_budget: null
   monthly_request_budget: null
   polling_timeout_seconds: 600
-  cache_ttl_days: 7
+  cache_ttl_days: 30
 
 matching:
   case_sensitive: true
@@ -37,12 +37,14 @@ buckets:
 
   hash_only:
     extensions:
-      [".pdf", ".docx", ".xlsx", ".mp4", ".mkv", ".png", ".jpg", ".jpeg", ".ogg", ".wav", ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc"]
+      [".pdf", ".docx", ".xlsx", ".mp4", ".mkv", ".png", ".jpg", ".jpeg", ".ogg", ".wav",
+       ".svg", ".ttf", ".otf", ".ttc",
+       ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc"]
     reason: "hash-only by default"
 
   upload_candidate:
     extensions:
-      [".sh", ".bash", ".zsh", ".py", ".pyc", ".pyd", ".rpyc", ".pl", ".rb", ".js", ".jar",
+      [".sh", ".bash", ".zsh", ".py", ".pyc", ".pyd", ".rpy", ".rpym", ".rpyc", ".rpymc", ".rpyb", ".rpa", ".pl", ".rb", ".js", ".jar",
        ".so", ".bin", ".appimage", ".deb", ".rpm", ".run", ".exe", ".dll", ".msi",
        ".scr", ".bat", ".cmd", ".ps1", ".com", ".vbs", ".wsf", ".lnk"]
     executable_bit: true

@@ -13,7 +13,7 @@ def test_quota_policy_values_are_available_to_web():
     # Guards the wiring contract: the web layer sources pacing from policy.
     q = parse_quota_policy(load_default_policy())
     assert q.requests_per_minute == 4
-    assert q.cache_ttl_days == 7
+    assert q.cache_ttl_days == 30
 
 
 def test_combined_requires_all_keys(tmp_path):

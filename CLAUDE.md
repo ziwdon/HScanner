@@ -76,7 +76,7 @@ ready-to-merge by a whole-branch review.
 **Sub-project B implemented** — local persistence: two SQLite stores in WAL mode —
 `$XDG_STATE_HOME/hscanner/store.db` (global; VT result cache + quota counters) and
 `<root>/.hscanner/scan.db` (per-root; resumable scan state). `VTCache` stores results with
-a configurable TTL (default 7 days); stale entries are queryable with `include_stale=True`.
+a configurable TTL (default 30 days); stale entries are queryable with `include_stale=True`.
 `ScanState` tracks per-file stage with change detection (size + mtime + SHA-256 key) so
 interrupted scans can resume via `--resume`. `QuotaCounter` maintains persistent daily/monthly
 VirusTotal API request counts; when either budget is exceeded `QuotaExhausted` is raised and
@@ -287,12 +287,13 @@ spec change and the user's sign-off:
 - **Engine API keys are never persisted to** scan state, reports, exports, logs, browser
   storage, or the default config. Keyring/secret-service when available; session-only otherwise.
 - **Classification is deterministic** — a fixed precedence pipeline, driven by structured policy
-  data, never scattered hardcoded conditionals. Unmatched regular files fall back to Hash-only.
+  data, never scattered hardcoded conditionals. Unmatched regular files fall back to upload
+  candidates so their hashes are checked online and per-file upload can be offered if not found.
 - **Size limits gate upload eligibility** (`large_upload_soft_block_mb`, `absolute_upload_block_mb`).
   Per-bucket rules may tighten global limits but never loosen them.
 - **The web server binds to `127.0.0.1` by default.** No hosted backend in the MVP.
 - **Never imply "safe."** Use "No detections." A missing engine result is "Unknown," not clean.
-- **Engine results are cached with freshness metadata and expire** (default 7-day TTL); cached
+- **Engine results are cached with freshness metadata and expire** (default 30-day TTL); cached
   "No detections" is not permanent truth.
 
 ## Consistency anchors

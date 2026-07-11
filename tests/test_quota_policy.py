@@ -18,7 +18,7 @@ def test_parses_default_policy_quota_block():
         daily_request_budget=None,
         monthly_request_budget=None,
         polling_timeout_seconds=600,
-        cache_ttl_days=7,
+        cache_ttl_days=30,
     )
 
 
