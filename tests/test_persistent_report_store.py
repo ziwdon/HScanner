@@ -84,14 +84,14 @@ def test_persistent_store_expires_reports_by_last_access(tmp_path) -> None:
     path = tmp_path / "reports.db"
     store = PersistentReportStore(
         path=path,
-        retention_seconds=7 * 24 * 3600,
+        retention_seconds=30 * 24 * 3600,
         now=clock,
     )
     store.put(_report())
-    clock.value += timedelta(days=6)
+    clock.value += timedelta(days=29)
     assert store.get("report-id") is not None
 
-    clock.value += timedelta(days=8)
+    clock.value += timedelta(days=31)
     assert store.get("report-id") is None
     with sqlite3.connect(path) as conn:
         count = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]

@@ -678,12 +678,16 @@ def scan_unverified_events(request: Request, report_id: str, job_id: str) -> Res
     async def _stream():
         queue = job.subscribe()
         try:
+            terminal_sent = False
             for event in job.replay_events():
                 yield _sse(event)
-            while not job.is_terminal:
-                yield _sse(await queue.get())
-            if job.last_event.get("state") not in {"done", "cancelled", "error"}:
-                yield _sse(job.last_event)
+                terminal_sent = terminal_sent or event.get("state") in {
+                    "done", "cancelled", "error"
+                }
+            while not terminal_sent:
+                event = await queue.get()
+                yield _sse(event)
+                terminal_sent = event.get("state") in {"done", "cancelled", "error"}
         finally:
             job.unsubscribe(queue)
 
