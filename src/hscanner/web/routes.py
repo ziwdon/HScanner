@@ -299,6 +299,9 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+_HEARTBEAT = ": hb\n\n"
+
+
 def _terminal_payload(job, event_data: dict[str, object] | None = None) -> dict[str, object]:
     data = {**job.snapshot.to_dict(), **(event_data or {})}
     data["type"] = EventType.SCAN_FINISHED.value
@@ -320,6 +323,7 @@ def scan_events(request: Request, job_id: str) -> Response:
         return JSONResponse({"error": "unknown job"}, status_code=404)
 
     async def _stream():
+        heartbeat = getattr(request.app.state, "sse_heartbeat_seconds", 15.0)
         queue = job.subscribe()
         queue_get_task = None
         try:
@@ -332,25 +336,39 @@ def scan_events(request: Request, job_id: str) -> Response:
                 if not queue.empty():
                     event = queue.get_nowait()
                 elif job.task is None:
-                    event = await queue.get()
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=heartbeat)
+                    except TimeoutError:
+                        yield _HEARTBEAT
+                        continue
                 elif job.task.done():
                     yield _sse(_terminal_payload(job))
                     return
                 else:
                     queue_get_task = asyncio.create_task(queue.get())
                     done, _ = await asyncio.wait(
-                        (queue_get_task, job.task), return_when=asyncio.FIRST_COMPLETED
+                        (queue_get_task, job.task),
+                        timeout=heartbeat,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                     if queue_get_task in done:
                         event = queue_get_task.result()
                         queue_get_task = None
-                    else:
+                    elif job.task in done:
                         queue_get_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await queue_get_task
                         queue_get_task = None
                         yield _sse(_terminal_payload(job))
                         return
+                    else:
+                        # Heartbeat timeout: no event and the scan is still alive.
+                        queue_get_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await queue_get_task
+                        queue_get_task = None
+                        yield _HEARTBEAT
+                        continue
 
                 data = {**job.snapshot.to_dict(), "status": job.status.value, **event.as_dict()}
                 if event.type == EventType.SCAN_FINISHED:

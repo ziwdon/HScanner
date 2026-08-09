@@ -674,3 +674,51 @@ async def test_scan_status_payload_excludes_api_key(tmp_path):
         response = await ac.get(f"/scan/{job_id}/status")
     assert response.status_code == 200
     assert "test-key-xyz" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: SSE heartbeat
+# ---------------------------------------------------------------------------
+
+
+def test_app_sets_default_sse_heartbeat_seconds():
+    app = create_app()
+    assert app.state.sse_heartbeat_seconds == 15.0
+
+
+async def test_sse_emits_heartbeat_when_idle():
+    app = create_app()
+    app.state.sse_heartbeat_seconds = 0.05
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+
+    stream = _event_stream(app, job.id)
+    assert _read_sse(await anext(stream))[0]["type"] == "snapshot"
+    heartbeat = await asyncio.wait_for(anext(stream), timeout=1)
+    assert heartbeat == ": hb\n\n"
+
+    job.cancel()
+    await job.task
+
+
+async def test_sse_heartbeat_still_delivers_terminal_payload():
+    app = create_app()
+    app.state.sse_heartbeat_seconds = 0.05
+
+    async def scan(observer, controller):
+        await asyncio.sleep(0.15)  # long enough for heartbeats to fire
+        return OnlineScanOutcome(results=[], status=ScanStatus.COMPLETED)
+
+    job = app.state.job_manager.start(scan, lambda outcome: "report-hb", per_minute=4)
+    stream = _event_stream(app, job.id)
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+        if len(_read_sse("".join(chunks))) >= 1 and any(
+            event.get("type") == "scan_finished" for event in _read_sse("".join(chunks))
+        ):
+            break
+    events = _read_sse("".join(chunks))
+    terminal = events[-1]
+    assert terminal["type"] == "scan_finished"
+    assert terminal["report_id"] == "report-hb"
+    assert any(chunk == ": hb\n\n" for chunk in chunks)
