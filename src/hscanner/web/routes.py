@@ -373,6 +373,18 @@ def scan_events(request: Request, job_id: str) -> Response:
     )
 
 
+@router.get("/scan/{job_id}/status")
+def scan_status(request: Request, job_id: str) -> Response:
+    job = _job_or_404(request, job_id)
+    if job is None:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    data = job.snapshot.to_dict()
+    data["status"] = job.status.value
+    data["report_id"] = job.report_id
+    data["error"] = job.error
+    return JSONResponse(data)
+
+
 @router.post("/scan/{job_id}/pause")
 async def pause_scan(request: Request, job_id: str) -> Response:
     job = _job_or_404(request, job_id)

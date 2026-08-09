@@ -613,3 +613,64 @@ async def test_live_sse_payload_carries_current_path_and_stage():
 
     job.cancel()
     await job.task
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: job status endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_status_running_job_returns_snapshot(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["total"] == 0
+    assert data["processed"] == 0
+    assert data["report_id"] is None
+    assert data["error"] is None
+    job.cancel()
+    await job.task
+
+
+def test_scan_status_unknown_id_404(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/scan/nope/status")
+    assert response.status_code == 404
+    assert response.json() == {"error": "unknown job"}
+
+
+async def test_scan_status_terminal_job_returns_report_id():
+    async def scan(observer, controller):
+        return OnlineScanOutcome(results=[], status=ScanStatus.COMPLETED)
+
+    app = create_app()
+    job = app.state.job_manager.start(scan, lambda outcome: "report-xyz", per_minute=4)
+    await job.task
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "finished"
+    assert data["report_id"] == "report-xyz"
+    assert data["error"] is None
+
+
+async def test_scan_status_payload_excludes_api_key(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    folder = _scan_folder(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        scan_response = await ac.post(
+            "/scan", data={"folder": folder, "upload_eligible": "false"}
+        )
+        match = re.search(r"/scan/([\w-]+)/events", scan_response.text)
+        assert match is not None
+        job_id = match.group(1)
+        job = app.state.job_manager.get(job_id)
+        await job.task
+        response = await ac.get(f"/scan/{job_id}/status")
+    assert response.status_code == 200
+    assert "test-key-xyz" not in response.text
