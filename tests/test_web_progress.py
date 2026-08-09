@@ -722,3 +722,51 @@ async def test_sse_heartbeat_still_delivers_terminal_payload():
     assert terminal["type"] == "scan_finished"
     assert terminal["report_id"] == "report-hb"
     assert any(chunk == ": hb\n\n" for chunk in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: reattach route + watch-live banner
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_page_route_renders_for_active_job(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}")
+    assert response.status_code == 200
+    assert job.id in response.text
+    assert "EventSource" in response.text
+    job.cancel()
+    await job.task
+
+
+def test_scan_page_route_unknown_id_404(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/scan/nope")
+    assert response.status_code == 404
+    assert "unknown or expired" in response.text
+
+
+async def test_index_shows_watch_live_banner_only_while_scan_active(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        active_page = await ac.get("/")
+        assert "Watch live" in active_page.text
+        assert f"/scan/{job.id}" in active_page.text
+        job.cancel()
+        await job.task
+        idle_page = await ac.get("/")
+        assert "Watch live" not in idle_page.text
+
+
+async def test_busy_scan_error_page_offers_watch_live(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post("/scan", data={"folder": _scan_folder(tmp_path)})
+    assert response.status_code == 409
+    assert "already in progress" in response.text
+    assert "Watch live" in response.text
+    assert f"/scan/{job.id}" in response.text

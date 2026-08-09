@@ -61,10 +61,15 @@ def _has_key(request: Request, engine_id: str) -> bool:
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
+    active = request.app.state.job_manager._active()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"active": "scan", "has_key": any(_has_key(request, eid) for eid in ENGINES)},
+        {
+            "active": "scan",
+            "has_key": any(_has_key(request, eid) for eid in ENGINES),
+            "active_job_id": active.id if active is not None else None,
+        },
     )
 
 
@@ -145,6 +150,7 @@ async def scan_folder(
     has_required_keys = any(_has_key(request, eid) for eid in ENGINES)
 
     def _index_error(message: str, status: int):
+        active_job = request.app.state.job_manager._active()
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -155,6 +161,7 @@ async def scan_folder(
                 "bypass_low_risk": bypass_low_risk,
                 "engine": engine,
                 "error": message,
+                "active_job_id": active_job.id if active_job is not None else None,
             },
             status_code=status,
         )
@@ -401,6 +408,24 @@ def scan_status(request: Request, job_id: str) -> Response:
     data["report_id"] = job.report_id
     data["error"] = job.error
     return JSONResponse(data)
+
+
+@router.get("/scan/{job_id}", response_class=HTMLResponse)
+def scan_progress_page(request: Request, job_id: str) -> HTMLResponse:
+    job = _job_or_404(request, job_id)
+    if job is None:
+        return HTMLResponse("<h1>Scan unknown or expired</h1>", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "progress.html",
+        {
+            "active": "scan",
+            "job_id": job.id,
+            "engine_display_names": {
+                engine_id: info.display_name for engine_id, info in ENGINES.items()
+            },
+        },
+    )
 
 
 @router.post("/scan/{job_id}/pause")

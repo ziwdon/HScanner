@@ -2,6 +2,15 @@
 {% block title %}HScanner — local file triage{% endblock %}
 {% block content %}
 <section class="hero">
+  {% if active_job_id %}
+  <div class="banner info rise">
+    <span class="dot" aria-hidden="true"></span>
+    <div>
+      <strong>A scan is in progress</strong>
+      <p><a href="/scan/{{ active_job_id }}">Watch live →</a></p>
+    </div>
+  </div>
+  {% endif %}
   {% if error %}
   <div class="banner rise">
     <span class="dot" aria-hidden="true"></span>
