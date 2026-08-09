@@ -7,6 +7,20 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Sub-project I: resilient scan progress (reconnect + reattach) — IMPLEMENTED (2026-08-09).**
+>
+> **Shipped:** `GET /scan/{id}/status` JSON endpoint (coarse job status + snapshot +
+> `report_id`/`error`); SSE heartbeat comments (`: hb`, default 15 s, injectable via
+> `app.state.sse_heartbeat_seconds`) so long rate-limit waits no longer let connections
+> die silently; progress page auto-reconnects after transient drops (soft "reconnecting"
+> notice while the browser retries, status-endpoint probe with 1s→10s backoff after
+> CLOSED, "no longer available" shown only on a definitive 404 and now points to
+> History); reattachable progress page at `GET /scan/{id}` plus a "Watch live" home
+> banner (also on the `POST /scan` 409 page) while a scan is active.
+> - **Spec:** `docs/superpowers/specs/2026-08-09-resilient-scan-progress-design.md`
+> - **Plan:** `docs/superpowers/plans/2026-08-09-resilient-scan-progress.md`
+> - **Verification:** full pytest suite passing; Ruff and `git diff --check` clean.
+
 > **Sub-project H: outcome-focused reports — IMPLEMENTED (2026-06-24).**
 >
 > **Shipped:** report schema v3 replaces implementation-focused `hashed` / severity /
