@@ -51,6 +51,9 @@
   const cancelBtn = document.getElementById('cancel');
   let total = 0, processed = 0;
   let lastStatus = 'running';
+  let es = null;
+  let probeTimer = null;
+  let probeDelay = 1000;
 
   function formatEta(seconds) {
     if (seconds < 60) return Math.ceil(seconds) + 's';
@@ -91,10 +94,31 @@
     cancelBtn.hidden = true;
   }
 
-  let gotMessage = false;
-  const es = new EventSource('/scan/{{ job_id }}/events');
-  es.onmessage = function (e) {
-    gotMessage = true;
+  function stopStreams() {
+    if (probeTimer !== null) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+    }
+    if (es !== null) {
+      es.close();
+      es = null;
+    }
+  }
+
+  function handleTerminal(ev) {
+    stopStreams();
+    disableControls();
+    if (ev.error || ev.status === 'error') {
+      // Show credential-safe server error message; never navigate.
+      showNotice(ev.error || 'Scan failed.');
+    } else if (ev.report_id) {
+      window.location = '/reports/' + ev.report_id;
+    } else {
+      showNotice('Scan completed — no report available.');
+    }
+  }
+
+  function onMessage(e) {
     const ev = JSON.parse(e.data);
     clearNotice();
 
@@ -147,26 +171,66 @@
 
     // Terminal event handling.
     if (ev.type === 'scan_finished') {
-      es.close();
-      disableControls();
-      if (ev.error || ev.status === 'error') {
-        // Show credential-safe server error message; never navigate.
-        showNotice(ev.error || 'Scan failed.');
-      } else if (ev.report_id) {
-        window.location = '/reports/' + ev.report_id;
-      } else {
-        showNotice('Scan completed — no report available.');
-      }
+      handleTerminal(ev);
     }
-  };
+  }
 
-  es.onerror = function () {
-    if (es.readyState === EventSource.CLOSED || !gotMessage) {
-      es.close();
-      disableControls();
-      showNotice('This scan is no longer available — it may have finished or expired.');
+  function onError() {
+    if (es !== null && es.readyState === EventSource.CONNECTING) {
+      // The browser is retrying the connection on its own.
+      showNotice('Connection lost — reconnecting…');
+      return;
     }
-  };
+    // EventSource.CLOSED: the browser gave up. Probe the server for the authoritative job state.
+    if (es !== null) {
+      es.close();
+      es = null;
+    }
+    showNotice('Connection lost — reconnecting…');
+    scheduleProbe();
+  }
+
+  function scheduleProbe() {
+    if (probeTimer === null) {
+      probeTimer = setTimeout(runProbe, probeDelay);
+    }
+  }
+
+  async function runProbe() {
+    probeTimer = null;
+    const nextDelay = Math.min(probeDelay * 2, 10000);
+    try {
+      const response = await fetch('/scan/' + jobId + '/status');
+      if (response.status === 404) {
+        // Definitive: the server says this job is unknown or expired.
+        disableControls();
+        showNotice('This scan is no longer available — it may have finished or expired. Check History for a finished report.');
+        return;
+      }
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'running' || data.status === 'paused') {
+          probeDelay = 1000;
+          connect();  // snapshot replay restores tiles, bar, current file, buttons
+          return;
+        }
+        handleTerminal(data);
+        return;
+      }
+    } catch (_err) {
+      // Server unreachable (down or restarting) — keep probing.
+    }
+    probeDelay = nextDelay;
+    scheduleProbe();
+  }
+
+  function connect() {
+    es = new EventSource('/scan/{{ job_id }}/events');
+    es.onmessage = onMessage;
+    es.onerror = onError;
+  }
+
+  window.addEventListener('beforeunload', stopStreams);
 
   async function post(action) {
     try {
@@ -197,6 +261,8 @@
     current.textContent = 'Cancelling after current step…';
     post('cancel');
   };
+
+  connect();
 })();
 </script>
 {% endblock %}

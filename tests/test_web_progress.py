@@ -770,3 +770,19 @@ async def test_busy_scan_error_page_offers_watch_live(tmp_path):
     assert "already in progress" in response.text
     assert "Watch live" in response.text
     assert f"/scan/{job.id}" in response.text
+
+
+def test_progress_page_has_reconnect_logic(tmp_path):
+    """Progress page JS must probe the status endpoint and reconnect on transient drops."""
+    client, _ = _client(tmp_path)
+    response = client.post("/scan", data={"folder": _scan_folder(tmp_path)})
+    assert response.status_code == 200
+    body = response.text
+    # Soft notice while the browser auto-retries, probe loop after CLOSED.
+    assert "Connection lost" in body
+    assert "EventSource.CONNECTING" in body
+    assert "EventSource.CLOSED" in body
+    assert "/status'" in body  # fetch('/scan/' + jobId + '/status')
+    # The fatal message is only shown after a definitive 404 and points to History.
+    assert "no longer available" in body
+    assert "Check History" in body
