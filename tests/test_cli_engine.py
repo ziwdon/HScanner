@@ -72,3 +72,19 @@ def test_wait_threshold_must_be_positive(tmp_path):
     )
 
     assert result.exit_code == 3
+
+
+def test_no_include_subfolders_limits_local_inventory(monkeypatch, tmp_path):
+    monkeypatch.setattr("hscanner.cli.load_saved_api_key", lambda engine_id: None)
+    (tmp_path / "top.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "nested.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["scan", str(tmp_path), "--engine", "virustotal", "--no-include-subfolders", "--json"]
+    )
+
+    # Exit 1: attention (top.sh is a script that wasn't queried).
+    assert result.exit_code == 1
+    assert "top.sh" in result.output
+    assert "nested.sh" not in result.output

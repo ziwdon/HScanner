@@ -143,8 +143,13 @@ def scan(
         "--bypass-low-risk/--no-bypass-low-risk",
         help="Hash low-risk files locally but skip their VirusTotal lookups (default on).",
     ),
+    include_subfolders: bool = typer.Option(
+        True,
+        "--include-subfolders/--no-include-subfolders",
+        help="Recurse into subfolders (default on). Off = scan only direct children of the root.",
+    ),
     engine: str = typer.Option(
-        "virustotal",
+        "combined",
         "--engine",
         help="Scan engine: virustotal, metadefender, or combined.",
     ),
@@ -211,7 +216,7 @@ def scan(
             f"Missing API key for: {names}. Running local-only inventory.",
             err=True,
         )
-        local_results = run_local_scan(path)
+        local_results = run_local_scan(path, include_subfolders=include_subfolders)
         finalize_unchecked_results(local_results, bypass_low_risk=bypass_low_risk)
         status = ScanStatus.KEY_MISSING if require_engine else ScanStatus.COMPLETED
         report_engine_id = "combined" if engine == "combined" else engine
@@ -259,6 +264,7 @@ def scan(
                 scan_state=scan_state,
                 refresh=refresh,
                 bypass_low_risk=bypass_low_risk,
+                include_subfolders=include_subfolders,
             )
         finally:
             for slot in rotation._slots:
