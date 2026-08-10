@@ -613,3 +613,176 @@ async def test_live_sse_payload_carries_current_path_and_stage():
 
     job.cancel()
     await job.task
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: job status endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_status_running_job_returns_snapshot(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["total"] == 0
+    assert data["processed"] == 0
+    assert data["report_id"] is None
+    assert data["error"] is None
+    job.cancel()
+    await job.task
+
+
+def test_scan_status_unknown_id_404(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/scan/nope/status")
+    assert response.status_code == 404
+    assert response.json() == {"error": "unknown job"}
+
+
+async def test_scan_status_terminal_job_returns_report_id():
+    async def scan(observer, controller):
+        return OnlineScanOutcome(results=[], status=ScanStatus.COMPLETED)
+
+    app = create_app()
+    job = app.state.job_manager.start(scan, lambda outcome: "report-xyz", per_minute=4)
+    await job.task
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "finished"
+    assert data["report_id"] == "report-xyz"
+    assert data["error"] is None
+
+
+async def test_scan_status_payload_excludes_api_key(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    folder = _scan_folder(tmp_path)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        scan_response = await ac.post(
+            "/scan", data={"folder": folder, "upload_eligible": "false"}
+        )
+        match = re.search(r"/scan/([\w-]+)/events", scan_response.text)
+        assert match is not None
+        job_id = match.group(1)
+        job = app.state.job_manager.get(job_id)
+        await job.task
+        response = await ac.get(f"/scan/{job_id}/status")
+    assert response.status_code == 200
+    assert "test-key-xyz" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: SSE heartbeat
+# ---------------------------------------------------------------------------
+
+
+def test_app_sets_default_sse_heartbeat_seconds():
+    app = create_app()
+    assert app.state.sse_heartbeat_seconds == 15.0
+
+
+async def test_sse_emits_heartbeat_when_idle():
+    app = create_app()
+    app.state.sse_heartbeat_seconds = 0.05
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+
+    stream = _event_stream(app, job.id)
+    assert _read_sse(await anext(stream))[0]["type"] == "snapshot"
+    heartbeat = await asyncio.wait_for(anext(stream), timeout=1)
+    assert heartbeat == ": hb\n\n"
+
+    job.cancel()
+    await job.task
+
+
+async def test_sse_heartbeat_still_delivers_terminal_payload():
+    app = create_app()
+    app.state.sse_heartbeat_seconds = 0.05
+
+    async def scan(observer, controller):
+        await asyncio.sleep(0.15)  # long enough for heartbeats to fire
+        return OnlineScanOutcome(results=[], status=ScanStatus.COMPLETED)
+
+    job = app.state.job_manager.start(scan, lambda outcome: "report-hb", per_minute=4)
+    stream = _event_stream(app, job.id)
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+        if len(_read_sse("".join(chunks))) >= 1 and any(
+            event.get("type") == "scan_finished" for event in _read_sse("".join(chunks))
+        ):
+            break
+    events = _read_sse("".join(chunks))
+    terminal = events[-1]
+    assert terminal["type"] == "scan_finished"
+    assert terminal["report_id"] == "report-hb"
+    assert any(chunk == ": hb\n\n" for chunk in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Resilient progress: reattach route + watch-live banner
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_page_route_renders_for_active_job(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get(f"/scan/{job.id}")
+    assert response.status_code == 200
+    assert job.id in response.text
+    assert "EventSource" in response.text
+    job.cancel()
+    await job.task
+
+
+def test_scan_page_route_unknown_id_404(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/scan/nope")
+    assert response.status_code == 404
+    assert "unknown or expired" in response.text
+
+
+async def test_index_shows_watch_live_banner_only_while_scan_active(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        active_page = await ac.get("/")
+        assert "Watch live" in active_page.text
+        assert f"/scan/{job.id}" in active_page.text
+        job.cancel()
+        await job.task
+        idle_page = await ac.get("/")
+        assert "Watch live" not in idle_page.text
+
+
+async def test_busy_scan_error_page_offers_watch_live(tmp_path):
+    app = create_app(keyring_module=_FakeKeyring(), engine_factory=_FastFakeClient)
+    job = app.state.job_manager.start(_blocking_factory(), lambda o: "r", per_minute=4)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post("/scan", data={"folder": _scan_folder(tmp_path)})
+    assert response.status_code == 409
+    assert "already in progress" in response.text
+    assert "Watch live" in response.text
+    assert f"/scan/{job.id}" in response.text
+
+
+def test_progress_page_has_reconnect_logic(tmp_path):
+    """Progress page JS must probe the status endpoint and reconnect on transient drops."""
+    client, _ = _client(tmp_path)
+    response = client.post("/scan", data={"folder": _scan_folder(tmp_path)})
+    assert response.status_code == 200
+    body = response.text
+    # Soft notice while the browser auto-retries, probe loop after CLOSED.
+    assert "Connection lost" in body
+    assert "EventSource.CONNECTING" in body
+    assert "EventSource.CLOSED" in body
+    assert "/status'" in body  # fetch('/scan/' + jobId + '/status')
+    # The fatal message is only shown after a definitive 404 and points to History.
+    assert "no longer available" in body
+    assert "Check History" in body

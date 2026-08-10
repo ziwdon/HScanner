@@ -40,6 +40,7 @@ def create_app(
         else _default_report_registry()
     )
     app.state.job_manager = JobManager()
+    app.state.sse_heartbeat_seconds = 15.0
     app.state.file_scan_manager = FileScanManager(
         job_scan_guard=lambda: app.state.job_manager._active() is not None
         or app.state.batch_file_scan_manager.has_active()

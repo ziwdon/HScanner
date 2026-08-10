@@ -61,10 +61,15 @@ def _has_key(request: Request, engine_id: str) -> bool:
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
+    active = request.app.state.job_manager._active()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"active": "scan", "has_key": any(_has_key(request, eid) for eid in ENGINES)},
+        {
+            "active": "scan",
+            "has_key": any(_has_key(request, eid) for eid in ENGINES),
+            "active_job_id": active.id if active is not None else None,
+        },
     )
 
 
@@ -145,6 +150,7 @@ async def scan_folder(
     has_required_keys = any(_has_key(request, eid) for eid in ENGINES)
 
     def _index_error(message: str, status: int):
+        active_job = request.app.state.job_manager._active()
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -155,6 +161,7 @@ async def scan_folder(
                 "bypass_low_risk": bypass_low_risk,
                 "engine": engine,
                 "error": message,
+                "active_job_id": active_job.id if active_job is not None else None,
             },
             status_code=status,
         )
@@ -299,6 +306,9 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+_HEARTBEAT = ": hb\n\n"
+
+
 def _terminal_payload(job, event_data: dict[str, object] | None = None) -> dict[str, object]:
     data = {**job.snapshot.to_dict(), **(event_data or {})}
     data["type"] = EventType.SCAN_FINISHED.value
@@ -320,6 +330,7 @@ def scan_events(request: Request, job_id: str) -> Response:
         return JSONResponse({"error": "unknown job"}, status_code=404)
 
     async def _stream():
+        heartbeat = getattr(request.app.state, "sse_heartbeat_seconds", 15.0)
         queue = job.subscribe()
         queue_get_task = None
         try:
@@ -332,25 +343,39 @@ def scan_events(request: Request, job_id: str) -> Response:
                 if not queue.empty():
                     event = queue.get_nowait()
                 elif job.task is None:
-                    event = await queue.get()
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=heartbeat)
+                    except TimeoutError:
+                        yield _HEARTBEAT
+                        continue
                 elif job.task.done():
                     yield _sse(_terminal_payload(job))
                     return
                 else:
                     queue_get_task = asyncio.create_task(queue.get())
                     done, _ = await asyncio.wait(
-                        (queue_get_task, job.task), return_when=asyncio.FIRST_COMPLETED
+                        (queue_get_task, job.task),
+                        timeout=heartbeat,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                     if queue_get_task in done:
                         event = queue_get_task.result()
                         queue_get_task = None
-                    else:
+                    elif job.task in done:
                         queue_get_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await queue_get_task
                         queue_get_task = None
                         yield _sse(_terminal_payload(job))
                         return
+                    else:
+                        # Heartbeat timeout: no event and the scan is still alive.
+                        queue_get_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await queue_get_task
+                        queue_get_task = None
+                        yield _HEARTBEAT
+                        continue
 
                 data = {**job.snapshot.to_dict(), "status": job.status.value, **event.as_dict()}
                 if event.type == EventType.SCAN_FINISHED:
@@ -370,6 +395,36 @@ def scan_events(request: Request, job_id: str) -> Response:
         _stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/scan/{job_id}/status")
+def scan_status(request: Request, job_id: str) -> Response:
+    job = _job_or_404(request, job_id)
+    if job is None:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    data = job.snapshot.to_dict()
+    data["status"] = job.status.value
+    data["report_id"] = job.report_id
+    data["error"] = job.error
+    return JSONResponse(data)
+
+
+@router.get("/scan/{job_id}", response_class=HTMLResponse)
+def scan_progress_page(request: Request, job_id: str) -> HTMLResponse:
+    job = _job_or_404(request, job_id)
+    if job is None:
+        return HTMLResponse("<h1>Scan unknown or expired</h1>", status_code=404)
+    return templates.TemplateResponse(
+        request,
+        "progress.html",
+        {
+            "active": "scan",
+            "job_id": job.id,
+            "engine_display_names": {
+                engine_id: info.display_name for engine_id, info in ENGINES.items()
+            },
+        },
     )
 
 
