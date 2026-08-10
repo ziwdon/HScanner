@@ -63,6 +63,19 @@
       </span>
     </label>
 
+    <label class="consent">
+      <span class="switch">
+        <input type="checkbox" name="include_subfolders" value="true" {% if include_subfolders is not defined or include_subfolders %}checked{% endif %}>
+        <span class="track" aria-hidden="true"></span>
+      </span>
+      <span class="copy">
+        <strong>Include subfolders</strong>
+        <span>On by default. Scan every file under this folder, including
+          subfolders. Uncheck to scan only files in this folder directly, not
+          subfolders.</span>
+      </span>
+    </label>
+
     <div class="row">
       <span class="label">Engine</span>
       <div class="e-picker" role="group" aria-label="Select scan engine">

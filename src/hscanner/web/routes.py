@@ -145,6 +145,7 @@ async def scan_folder(
     request: Request,
     folder: str = Form(...),
     bypass_low_risk: bool = Form(True),
+    include_subfolders: bool = Form(True),
     engine: str = Form("combined"),
 ) -> HTMLResponse:
     has_required_keys = any(_has_key(request, eid) for eid in ENGINES)
@@ -159,6 +160,7 @@ async def scan_folder(
                 "has_key": has_required_keys,
                 "folder": folder,
                 "bypass_low_risk": bypass_low_risk,
+                "include_subfolders": include_subfolders,
                 "engine": engine,
                 "error": message,
                 "active_job_id": active_job.id if active_job is not None else None,
@@ -243,6 +245,7 @@ async def scan_folder(
                     rotation,
                     upload_consent=False,
                     bypass_low_risk=bypass_low_risk,
+                    include_subfolders=include_subfolders,
                     cache=cache,
                     scan_state=scan_state,
                     observer=observer,

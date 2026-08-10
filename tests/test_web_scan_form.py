@@ -52,3 +52,12 @@ def test_scan_form_default_engine_is_combined():
     assert "checked" in radio_tag("combined")
     # VirusTotal radio is NOT checked in the default render
     assert "checked" not in radio_tag("virustotal")
+
+
+def test_scan_form_has_include_subfolders_toggle():
+    app = create_app(keyring_module=_FakeKeyring())
+    client = TestClient(app)
+    html = client.get("/").text
+    assert 'name="include_subfolders"' in html
+    # Appears directly below the bypass toggle (its copy precedes it in the document)
+    assert "Include subfolders" in html
