@@ -7,6 +7,20 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Sub-project J: combined default + include-subfolders toggle — IMPLEMENTED (2026-08-10).**
+>
+> **Shipped:** web scan form lists the Combined engine card first and selected by default
+> (order: Combined → VirusTotal → MetaDefender); CLI `--engine` default flips to `combined`;
+> new "Include subfolders" toggle on the web form (default on, directly below "Bypass low-risk
+> files") and `--include-subfolders/--no-include-subfolders` CLI option (default on) control
+> whether `iter_inventory` recurses into subdirectories; the Scanner Core (`iter_inventory`,
+> `run_local_scan`, `run_online_scan`) gains a `recurse`/`include_subfolders` keyword (Core
+> default `True`); the `.hscanner` root-scoped exclusion and `follow_symlinks=false` invariant
+> hold under `recurse=False`. `COMBINED_ENGINE_IDS` failover order is unchanged.
+> - **Spec:** `docs/superpowers/specs/2026-08-10-combined-default-and-subfolder-toggle-design.md`
+> - **Plan:** `docs/superpowers/plans/2026-08-10-combined-default-and-subfolder-toggle.md`
+> - **Verification:** full pytest suite passing; Ruff clean.
+
 > **Sub-project I: resilient scan progress (reconnect + reattach) — IMPLEMENTED (2026-08-09).**
 >
 > **Shipped:** `GET /scan/{id}/status` JSON endpoint (coarse job status + snapshot +
@@ -239,8 +253,8 @@ keyring (API-key storage), PyYAML (policy), pytest + pytest-asyncio + pytest-htt
   `HS_API_KEY_VIRUSTOTAL` or `HS_API_KEY_METADEFENDER`, or the saved keyring entry); local-only
   inventory otherwise. Combined online scans require keys for every combined engine; if any are
   missing, the CLI falls back to local-only inventory unless `--require-engine` is set.
-  Engine selection: `--engine virustotal` (default), `--engine metadefender`, or
-  `--engine combined`.
+  Engine selection: `--engine combined` (default), `--engine virustotal`, or
+  `--engine metadefender`.
   Online flags: `--resume` (continue an interrupted scan), `--refresh` (ignore cache and
   force re-query). Report-export flags: `--report PATH` (write a `.json`/`.html`/`.csv` report —
   format inferred from the extension, written atomically), `--require-engine` (exit 4 if required
