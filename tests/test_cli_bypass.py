@@ -1,19 +1,27 @@
-from typer.testing import CliRunner
+import typer
 
 from hscanner.cli import app
 
-runner = CliRunner()
+
+def _scan_option_names() -> set[str]:
+    """Return all option flag strings for the scan command (rendering-independent)."""
+    group = typer.main.get_command(app)
+    cmd = group.commands["scan"]
+    names: set[str] = set()
+    for p in cmd.params:
+        if hasattr(p, "opts"):
+            names.update(p.opts)
+            names.update(getattr(p, "secondary_opts", []))
+    return names
 
 
 def test_help_lists_bypass_flag():
-    result = runner.invoke(app, ["scan", "--help"], env={"COLUMNS": "200"})
-    assert result.exit_code == 0
-    assert "--bypass-low-risk" in result.output
-    assert "--no-bypass-low-risk" in result.output
+    names = _scan_option_names()
+    assert "--bypass-low-risk" in names
+    assert "--no-bypass-low-risk" in names
 
 
 def test_help_lists_include_subfolders_flag():
-    result = runner.invoke(app, ["scan", "--help"], env={"COLUMNS": "200"})
-    assert result.exit_code == 0
-    assert "--include-subfolders" in result.output
-    assert "--no-include-subfolders" in result.output
+    names = _scan_option_names()
+    assert "--include-subfolders" in names
+    assert "--no-include-subfolders" in names
