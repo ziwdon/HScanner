@@ -72,3 +72,23 @@ async def test_no_bypass_looks_up_everything(tmp_path, monkeypatch):
     )
     assert len(client.looked_up) == 2
     assert all(result.lookup_status == LookupStatus.NOT_FOUND for result in outcome.results)
+
+
+@pytest.mark.asyncio
+async def test_online_scan_top_level_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "top.sh").write_text("#!/bin/sh\necho hi\n")
+    (scan_dir / "sub").mkdir()
+    (scan_dir / "sub" / "nested.sh").write_text("#!/bin/sh\necho nested\n")
+    client = FakeClient()
+    cache = EngineCache(open_global_store())
+    outcome = await run_online_scan(
+        scan_dir, single_engine_rotation(client), upload_consent=False, cache=cache,
+        include_subfolders=False,
+    )
+    names = [r.record.path.name for r in outcome.results]
+    assert "top.sh" in names
+    assert "nested.sh" not in names
+    assert len(client.looked_up) == 1  # only top.sh
