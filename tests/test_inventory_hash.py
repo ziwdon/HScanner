@@ -55,3 +55,14 @@ def test_sha256_file_streams_file(tmp_path) -> None:
     sample.write_bytes(b"abc")
 
     assert sha256_file(sample) == hashlib.sha256(b"abc").hexdigest()
+
+
+def test_inventory_top_level_only_skips_subdirs(tmp_path) -> None:
+    (tmp_path / "top.txt").write_text("top", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "nested.txt").write_text("nested", encoding="utf-8")
+
+    records = list(iter_inventory(tmp_path, recurse=False))
+    relative = sorted(record.relative_path for record in records)
+
+    assert relative == ["top.txt"]
