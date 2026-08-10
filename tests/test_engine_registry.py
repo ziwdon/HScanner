@@ -148,7 +148,9 @@ async def test_folder_scan_nested_builder_uses_registry(tmp_path, monkeypatch) -
     app = create_app(keyring_module=_Keyring())
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/scan", data={"folder": str(tmp_path)})
+        response = await client.post(
+            "/scan", data={"folder": str(tmp_path), "engine": "virustotal"}
+        )
 
     job_id = re.search(r'data-job-id="([^"]+)"', response.text).group(1)
     await app.state.job_manager.get(job_id).task

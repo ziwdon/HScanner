@@ -145,7 +145,7 @@ async def scan_folder(
     request: Request,
     folder: str = Form(...),
     bypass_low_risk: bool = Form(True),
-    engine: str = Form("virustotal"),
+    engine: str = Form("combined"),
 ) -> HTMLResponse:
     has_required_keys = any(_has_key(request, eid) for eid in ENGINES)
 
