@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from hscanner.web.app import create_app
@@ -38,7 +40,6 @@ def test_scan_form_default_engine_is_combined():
     client = TestClient(create_app())
     body = client.get("/").text
     # Locate the full <input ...> radio tag for each engine and check `checked`
-    import re
 
     def radio_tag(value: str) -> str:
         m = re.search(

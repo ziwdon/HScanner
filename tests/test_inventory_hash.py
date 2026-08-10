@@ -66,3 +66,25 @@ def test_inventory_top_level_only_skips_subdirs(tmp_path) -> None:
     relative = sorted(record.relative_path for record in records)
 
     assert relative == ["top.txt"]
+
+
+def test_inventory_top_level_only_preserves_hscanner_and_symlink_invariants(tmp_path) -> None:
+    # Security invariants (.hscanner root-scoped exclusion + follow_symlinks=false) must
+    # hold under recurse=False, where the dirnames prune runs after the per-name loop.
+    (tmp_path / ".hscanner").mkdir()
+    (tmp_path / ".hscanner" / "meta.db").write_text("m", encoding="utf-8")
+    (tmp_path / "top.txt").write_text("top", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "nested.txt").write_text("n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("s", encoding="utf-8")
+    (tmp_path / "link_dir").symlink_to(outside, target_is_directory=True)
+
+    relative = sorted(r.relative_path for r in iter_inventory(tmp_path, recurse=False))
+
+    assert ".hscanner/meta.db" not in relative          # root .hscanner excluded
+    assert "nested.txt" not in relative                  # no descent into real subdirs
+    assert "link_dir" in relative                        # symlinked dir yielded as entry
+    assert "link_dir/secret.txt" not in relative        # symlink not descended
+    assert relative == ["link_dir", "top.txt"]
