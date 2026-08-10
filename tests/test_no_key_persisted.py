@@ -124,7 +124,12 @@ async def test_api_key_absent_from_job_snapshot_and_state(tmp_path):
     app = create_app(keyring_module=FakeKeyring(), engine_factory=client_factory)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
-            "/scan", data={"folder": str(tmp_path), "upload_eligible": "false"}
+            "/scan",
+            data={
+                "folder": str(tmp_path),
+                "engine": "virustotal",
+                "upload_eligible": "false",
+            },
         )
 
     assert response.status_code == 200
@@ -178,7 +183,12 @@ async def test_configured_api_key_absent_from_reports_db_after_web_scan(tmp_path
     app = create_app(keyring_module=FakeKeyring(), engine_factory=client_factory)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
-            "/scan", data={"folder": str(tmp_path / "scan"), "upload_eligible": "false"}
+            "/scan",
+            data={
+                "folder": str(tmp_path / "scan"),
+                "engine": "virustotal",
+                "upload_eligible": "false",
+            },
         )
 
     assert response.status_code == 200

@@ -188,11 +188,16 @@ async def _resolve_with_engine(
         result.errors.append(exc.code)
 
 
-def run_local_scan(root: Path, *, scan_state: "ScanState | None" = None) -> list[FileResult]:
+def run_local_scan(
+    root: Path,
+    *,
+    scan_state: "ScanState | None" = None,
+    include_subfolders: bool = True,
+) -> list[FileResult]:
     policy = load_default_policy()
     results: list[FileResult] = []
     inode_hashes: dict[tuple[int, int], str] = {}
-    for record in iter_inventory(root):
+    for record in iter_inventory(root, recurse=include_subfolders):
         classification = classify_file(record, policy)
         result = FileResult(record=record, classification=classification)
         if classification.hash_eligible and record.is_regular:
@@ -319,6 +324,7 @@ async def run_online_scan(
     scan_state: ScanState | None = None,
     refresh: bool = False,
     bypass_low_risk: bool = False,
+    include_subfolders: bool = True,
     observer: ScanObserver | None = None,
     controller: ScanController | None = None,
 ) -> OnlineScanOutcome:
@@ -330,7 +336,7 @@ async def run_online_scan(
             if hasattr(slot.engine, "hooks"):
                 slot.engine.hooks = hooks
     all_ids = [slot.engine.info.id for slot in rotation._slots]
-    results = run_local_scan(root, scan_state=scan_state)
+    results = run_local_scan(root, scan_state=scan_state, include_subfolders=include_subfolders)
     results.sort(
         key=lambda r: (
             0 if risk_tier_for(r.classification.bucket) == RiskTier.PRIORITY else 1,

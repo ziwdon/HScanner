@@ -63,11 +63,38 @@
       </span>
     </label>
 
+    <label class="consent">
+      <span class="switch">
+        <input type="checkbox" name="include_subfolders" value="true" {% if include_subfolders is not defined or include_subfolders %}checked{% endif %}>
+        <span class="track" aria-hidden="true"></span>
+      </span>
+      <span class="copy">
+        <strong>Include subfolders</strong>
+        <span>On by default. Scan every file under this folder, including
+          subfolders. Uncheck to scan only files in this folder directly, not
+          subfolders.</span>
+      </span>
+    </label>
+
     <div class="row">
       <span class="label">Engine</span>
       <div class="e-picker" role="group" aria-label="Select scan engine">
         <label class="e-card">
-          <input type="radio" name="engine" value="virustotal" {% if engine is not defined or engine == "virustotal" %}checked{% endif %}>
+          <input type="radio" name="engine" value="combined" {% if engine is not defined or engine == "combined" %}checked{% endif %}>
+          <span class="e-badge">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path class="e-fill" d="M10 1.5L2 4.6v5.3c0 4.2 3.2 7.5 8 9 4.8-1.5 8-4.8 8-9V4.6L10 1.5z"/>
+              <path class="e-mark" d="M6 8.5h8M6 11.5h8" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="e-body">
+            <span class="e-name">Combined</span>
+            <span class="e-desc">Balances checks across engines when limits apply</span>
+          </span>
+          <span class="e-pip" aria-hidden="true"></span>
+        </label>
+        <label class="e-card">
+          <input type="radio" name="engine" value="virustotal" {% if engine is defined and engine == "virustotal" %}checked{% endif %}>
           <span class="e-badge">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path class="e-fill" d="M10 1.5L2 4.6v5.3c0 4.2 3.2 7.5 8 9 4.8-1.5 8-4.8 8-9V4.6L10 1.5z"/>
@@ -93,20 +120,6 @@
           <span class="e-body">
             <span class="e-name">MetaDefender</span>
             <span class="e-desc">OPSWAT multi-scan</span>
-          </span>
-          <span class="e-pip" aria-hidden="true"></span>
-        </label>
-        <label class="e-card">
-          <input type="radio" name="engine" value="combined" {% if engine is defined and engine == "combined" %}checked{% endif %}>
-          <span class="e-badge">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path class="e-fill" d="M10 1.5L2 4.6v5.3c0 4.2 3.2 7.5 8 9 4.8-1.5 8-4.8 8-9V4.6L10 1.5z"/>
-              <path class="e-mark" d="M6 8.5h8M6 11.5h8" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <span class="e-body">
-            <span class="e-name">Combined</span>
-            <span class="e-desc">Balances checks across engines when limits apply</span>
           </span>
           <span class="e-pip" aria-hidden="true"></span>
         </label>

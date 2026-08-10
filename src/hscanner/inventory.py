@@ -9,7 +9,7 @@ class InventoryPathError(ValueError):
     """Raised when a requested report path is outside the scan root."""
 
 
-def iter_inventory(root: Path) -> Iterator[FileRecord]:
+def iter_inventory(root: Path, *, recurse: bool = True) -> Iterator[FileRecord]:
     root = root.resolve()
     candidates: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -27,6 +27,8 @@ def iter_inventory(root: Path) -> Iterator[FileRecord]:
             else:
                 real_dirnames.append(name)
         dirnames[:] = real_dirnames
+        if not recurse and base == root:
+            dirnames[:] = []  # do not descend into subdirectories
         for name in filenames:
             candidates.append(base / name)
     for path in sorted(candidates):
