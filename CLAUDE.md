@@ -256,7 +256,8 @@ keyring (API-key storage), PyYAML (policy), pytest + pytest-asyncio + pytest-htt
   Engine selection: `--engine combined` (default), `--engine virustotal`, or
   `--engine metadefender`.
   Online flags: `--resume` (continue an interrupted scan), `--refresh` (ignore cache and
-  force re-query). Report-export flags: `--report PATH` (write a `.json`/`.html`/`.csv` report —
+  force re-query), `--include-subfolders/--no-include-subfolders` (recurse into subfolders,
+  default on; off = scan only direct children of the root). Report-export flags: `--report PATH` (write a `.json`/`.html`/`.csv` report —
   format inferred from the extension, written atomically), `--require-engine` (exit 4 if required
   key(s) do not resolve), `--max-requests N` (per-scan engine request ceiling, overrides the policy). Stable
   exit codes with deterministic precedence (6→3→4→5→2→1→0): 0 none / 1 attention / 2 file errors /
