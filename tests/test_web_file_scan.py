@@ -8,6 +8,7 @@ TDD tests for per-file scan endpoints:
 import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from hscanner.classifier import classify_file
@@ -61,6 +62,57 @@ class _FoundClient:
 
     async def upload_file(self, path):
         raise AssertionError("upload must not be called when get_file_report is non-None")
+
+    async def close(self):
+        pass
+
+
+_MALICIOUS_REPORT = EngineFileReport(
+    engine_stats={"malicious": 3, "undetected": 57},
+    assessment_complete=True,
+    raw={"data": {"attributes": {"last_analysis_stats": {"malicious": 3, "undetected": 57}}}},
+)
+
+
+class _MaliciousFoundClient:
+    """Returns a malicious found verdict; leaves the file infected. Upload is never called."""
+
+    info = EngineInfo(id="virustotal", display_name="VirusTotal", default_per_minute=4)
+
+    async def get_file_report(self, sha256):
+        return _MALICIOUS_REPORT
+
+    async def upload_file(self, path):
+        raise AssertionError("upload must not be called when get_file_report is non-None")
+
+    async def close(self):
+        pass
+
+
+_INCOMPLETE_REPORT = EngineFileReport(
+    engine_stats={"undetected": 0},
+    assessment_complete=False,
+    raw={"data": {}},
+)
+
+
+class _IncompleteNotFoundClient:
+    """Hash not found; upload succeeds but analysis returns an incomplete report.
+
+    Leaves the file in ``needs_attention`` (``engine_not_found``) so the live
+    payload exercises the needs-attention priority group.
+    """
+
+    info = EngineInfo(id="virustotal", display_name="VirusTotal", default_per_minute=4)
+
+    async def get_file_report(self, sha256):
+        return None
+
+    async def upload_file(self, path):
+        return "analysis-id"
+
+    async def wait_for_analysis(self, analysis_id, sha256):
+        return _INCOMPLETE_REPORT
 
     async def close(self):
         pass
@@ -192,6 +244,102 @@ def test_file_scan_done_event_includes_live_row_payload(tmp_path, monkeypatch):
     assert terminal["file"]["outcome"] == "no_detections"
     assert 'data-index="0"' in terminal["file_card_html"]
     assert "No detections" in terminal["file_card_html"]
+
+
+def test_group_for_file_view_covers_all_outcomes():
+    """The shared grouping helper resolves the right group key/title for each
+    outcome the live single-file update path can emit, and returns ``None`` for
+    flat (ungrouped) sections (infected, error)."""
+    from hscanner.report_view import group_for_file_view
+
+    def _f(outcome, bucket, ext):
+        return {"outcome_key": outcome, "classification_bucket": bucket, "extension": ext}
+
+    assert group_for_file_view(_f("needs_attention", "upload_candidate", "sh")) == {
+        "key": "priority",
+        "title": "Priority",
+    }
+    assert group_for_file_view(_f("needs_attention", "suspicious_upload_blocked", "pak")) == {
+        "key": "priority",
+        "title": "Priority",
+    }
+    assert group_for_file_view(_f("needs_attention", "hash_only", "pdf")) == {
+        "key": "low_risk",
+        "title": "Lower risk",
+    }
+    assert group_for_file_view(_f("no_detections", "upload_candidate", "exe")) == {
+        "key": "exe",
+        "title": ".exe",
+    }
+    assert group_for_file_view(_f("no_detections", "upload_candidate", "")) == {
+        "key": "",
+        "title": "(no extension)",
+    }
+    assert group_for_file_view(_f("skipped", "skipped", "txt")) == {
+        "key": "txt",
+        "title": ".txt",
+    }
+    assert group_for_file_view(_f("skipped", "skipped", "")) == {
+        "key": "",
+        "title": "(no extension)",
+    }
+    assert group_for_file_view(_f("infected", "upload_candidate", "sh")) is None
+    assert group_for_file_view(_f("error", "upload_candidate", "sh")) is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "factory", "expected_outcome", "expected_group"),
+    [
+        ("tool.sh", "#!/bin/sh\necho hello\n", lambda: _FoundClient(), "no_detections", "sh"),
+        ("tool.exe", "MZ\x90\x00binary", lambda: _FoundClient(), "no_detections", "exe"),
+        ("Makefile", "all:\n\techo hi\n", lambda: _FoundClient(), "no_detections", ""),
+        (
+            "tool.sh",
+            "#!/bin/sh\necho hello\n",
+            lambda: _IncompleteNotFoundClient(),
+            "needs_attention",
+            "priority",
+        ),
+        (
+            "tool.sh",
+            "#!/bin/sh\necho hello\n",
+            lambda: _MaliciousFoundClient(),
+            "infected",
+            None,
+        ),
+    ],
+)
+def test_file_scan_done_event_includes_group_field(
+    filename, content, factory, expected_outcome, expected_group, tmp_path, monkeypatch
+):
+    """The terminal SSE ``done`` payload carries a ``file.group`` field matching
+    the grouped report DOM for grouped outcomes, and omits it for flat outcomes
+    (infected). Drives the real per-file scan path with an injected engine."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("HS_API_KEY_VIRUSTOTAL", raising=False)
+
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / filename).write_text(content)
+
+    engine = factory()
+    app, client = _make_app_and_client(vt_factory=lambda engine_id, key: engine)
+    report = _seed_report(app, scan_dir)
+    idx = _idx(report, filename)
+
+    resp = client.post(f"/reports/{report.report_id}/files/{idx}/scan")
+    assert resp.status_code == 202, resp.text
+    with client.stream("GET", f"/reports/{report.report_id}/files/{idx}/scan/events") as s:
+        events = _parse_sse("".join(s.iter_text()))
+
+    terminal = events[-1]
+    assert terminal["state"] == "done", events
+    assert terminal["outcome"] == expected_outcome, terminal
+    if expected_group is None:
+        assert "group" not in terminal["file"], terminal
+    else:
+        assert terminal["file"]["group"] == expected_group, terminal
+        assert terminal["file"].get("group_title"), terminal
 
 
 def test_combined_report_file_scan_uses_file_provenance_engine(tmp_path, monkeypatch):

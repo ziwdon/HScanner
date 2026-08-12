@@ -1,6 +1,7 @@
 from typing import Any
 
 from hscanner.engines.registry import ENGINES
+from hscanner.models import ClassificationBucket, RiskTier, risk_tier_for
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import ReportFile, ScanReport
 
@@ -65,6 +66,7 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
     if file.shebang:
         badges.append("shebang")
     can_scan = file.outcome in {"needs_attention", "error"} and file.upload_eligible
+    ext = name.rpartition(".")[2].lower() if "." in name else ""
     return {
         "index": file.index,
         "name": name,
@@ -94,7 +96,77 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
         "can_scan": can_scan,
         "too_large": file.outcome_reason == "upload_blocked",
         "size_limit_mb": _ABSOLUTE_UPLOAD_MB,
+        "extension": ext,
     }
+
+
+_RISK_GROUP_META = {
+    RiskTier.PRIORITY.value: {"key": "priority", "title": "Priority", "sev": "sev-high"},
+    RiskTier.LOW_RISK.value: {"key": "low_risk", "title": "Lower risk", "sev": "sev-unknown"},
+}
+
+
+def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
+    """Resolve the grouping ``{"key", "title"}`` for a built file view, or
+    ``None`` when the file's outcome section is flat (no grouping).
+
+    Shared by the static report render grouping (``_group_needs_attention_by_risk``,
+    ``_group_by_extension``) and the live single-file update payload so both
+    paths place a file in the same group with the same label.
+    """
+    outcome = file_view["outcome_key"]
+    if outcome == "needs_attention":
+        tier = risk_tier_for(ClassificationBucket(file_view["classification_bucket"]))
+        meta = _RISK_GROUP_META.get(tier.value)
+        if meta is None:
+            return None
+        return {"key": meta["key"], "title": meta["title"]}
+    if outcome in {"no_detections", "skipped"}:
+        ext = file_view["extension"]
+        return {"key": ext, "title": "(no extension)" if ext == "" else f".{ext}"}
+    return None
+
+
+def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "priority": [],
+        "low_risk": [],
+    }
+    for file in files:
+        group = group_for_file_view(file)
+        buckets.setdefault(group["key"] if group else "priority", []).append(file)
+    groups = []
+    for key in ("priority", "low_risk"):
+        group_files = buckets.get(key, [])
+        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
+        groups.append({
+            "key": key,
+            "title": meta["title"],
+            "files": group_files,
+            "total": len(group_files),
+            "hidden": 0,
+        })
+    return groups
+
+
+def _group_by_extension(files: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
+    by_ext: dict[str, list[dict[str, Any]]] = {}
+    for file in files:
+        group = group_for_file_view(file)
+        by_ext.setdefault(group["key"] if group else "", []).append(file)
+    groups = []
+    for ext in sorted(by_ext):
+        group_files = by_ext[ext]
+        shown = group_files[:cap]
+        title = group_for_file_view(group_files[0])["title"]
+        groups.append({
+            "key": ext,
+            "title": title,
+            "files": shown,
+            "total": len(group_files),
+            "hidden": len(group_files) - len(shown),
+        })
+    return groups
 
 
 def build_report_view(
@@ -121,7 +193,7 @@ def build_report_view(
             and any(file["can_scan"] for file in files)
         )
         batch_action_assigned = batch_action_assigned or has_batch_action
-        sections.append({
+        section = {
             "outcome": outcome,
             "id": anchor,
             "title": title,
@@ -130,7 +202,30 @@ def build_report_view(
             "total": len(files),
             "hidden": len(files) - len(shown),
             "has_batch_action": has_batch_action,
-        })
+        }
+        if outcome == "needs_attention":
+            risk_groups = _group_needs_attention_by_risk(files)
+            section["groups"] = risk_groups
+            section["risk_chips"] = [
+                {
+                    "key": g["key"],
+                    "label": g["title"],
+                    "count": g["total"],
+                    "sev": _RISK_GROUP_META[
+                        RiskTier.PRIORITY.value if g["key"] == "priority"
+                        else RiskTier.LOW_RISK.value
+                    ]["sev"],
+                }
+                for g in risk_groups
+            ]
+            section["filters"] = [
+                {"key": "all", "label": "All", "pressed": True},
+                {"key": "priority", "label": "Priority", "pressed": False},
+                {"key": "low_risk", "label": "Lower risk", "pressed": False},
+            ]
+        elif outcome in {"no_detections", "skipped"}:
+            section["groups"] = _group_by_extension(files, secondary_cap)
+        sections.append(section)
 
     summary = report.summary
     tiles = [

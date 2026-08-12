@@ -180,7 +180,7 @@ def test_base_template_does_not_fetch_external_fonts() -> None:
     assert response.status_code == 200
     assert "fonts.googleapis.com" not in response.text
     assert "fonts.gstatic.com" not in response.text
-    assert "/static/app.css?v=8" in response.text
+    assert "/static/app.css?v=9" in response.text
 
 
 def test_export_menu_stacks_above_report_content_below_topbar() -> None:
@@ -451,3 +451,141 @@ async def test_scan_renders_outcome_report_with_navigation(tmp_path) -> None:
     assert "/scan-unverified/active" in response.text
     assert "/cancel" in response.text
     assert "tool.sh" in response.text
+
+
+def test_report_view_renders_needs_attention_groups_and_filters(tmp_path):
+    from hscanner.classifier import classify_file
+    from hscanner.models import (
+        ClassificationBucket,
+        FileRecord,
+        FileResult,
+        LookupStatus,
+        OutcomeReason,
+        ScanOutcome,
+    )
+    from hscanner.policy.loader import load_default_policy
+    from hscanner.report import build_scan_report, classify_report_result
+
+    root = Path("/scan")
+
+    def _needs(name, bucket):
+        rec = FileRecord(
+            root=root,
+            path=root / name,
+            size=100,
+            mtime_ns=0,
+            mode=0o644,
+            is_symlink=False,
+            is_regular=True,
+            is_hidden=False,
+        )
+        cls = classify_file(rec, load_default_policy())
+        cls.bucket = bucket
+        res = FileResult(
+            record=rec, classification=cls, lookup_status=LookupStatus.NOT_FOUND
+        )
+        res.outcome = ScanOutcome.NEEDS_ATTENTION
+        res.outcome_reason = OutcomeReason.ENGINE_NOT_FOUND
+        return classify_report_result(res)
+
+    results = [
+        _needs("tool.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("notes.txt", ClassificationBucket.HASH_ONLY),
+    ]
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "nap-task4-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+
+    response = TestClient(app).get("/reports/nap-task4-report")
+    body = response.text
+    assert '<details class="group" data-group="priority"' in body
+    assert '<details class="group" data-group="low_risk"' in body
+    assert 'class="risk-chips"' in body
+    assert 'class="filter-pills"' in body
+    assert 'data-filter="all"' in body
+    assert 'data-filter="priority"' in body
+    assert 'data-filter="low_risk"' in body
+
+
+def test_report_view_renders_extension_groups_for_no_detections(tmp_path):
+    from hscanner.classifier import classify_file
+    from hscanner.models import (
+        FileRecord,
+        FileResult,
+        LookupStatus,
+        OutcomeReason,
+        ScanOutcome,
+    )
+    from hscanner.policy.loader import load_default_policy
+    from hscanner.report import build_scan_report, classify_report_result
+
+    root = Path("/scan")
+
+    def _no_detections(name):
+        rec = FileRecord(
+            root=root,
+            path=root / name,
+            size=100,
+            mtime_ns=0,
+            mode=0o644,
+            is_symlink=False,
+            is_regular=True,
+            is_hidden=False,
+        )
+        cls = classify_file(rec, load_default_policy())
+        res = FileResult(
+            record=rec, classification=cls, lookup_status=LookupStatus.FOUND
+        )
+        res.outcome = ScanOutcome.NO_DETECTIONS
+        res.outcome_reason = OutcomeReason.ENGINE_CLEAN
+        res.assessment_complete = True
+        return classify_report_result(res)
+
+    results = [
+        _no_detections("alpha.exe"),
+        _no_detections("beta.exe"),
+        _no_detections("gamma.sh"),
+        _no_detections("readme"),
+    ]
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "nap-task5-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+
+    body = TestClient(app).get("/reports/nap-task5-report").text
+
+    nodet_match = re.search(
+        r'<section class="section" id="no-detections".*?</section>',
+        body,
+        flags=re.DOTALL,
+    )
+    assert nodet_match is not None, "no-detections section not found"
+    nodet_html = nodet_match.group(0)
+    assert '<details class="group" data-group="' in nodet_html
+    assert "Showing first 500 of" in nodet_html or 'details class="group"' in nodet_html
+
+
+def test_base_html_references_latest_app_css_cache_buster() -> None:
+    from pathlib import Path
+
+    base = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "hscanner"
+        / "web"
+        / "templates"
+        / "base.html"
+    )
+    text = base.read_text(encoding="utf-8")
+    assert "app.css?v=9" in text
