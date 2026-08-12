@@ -65,6 +65,7 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
     if file.shebang:
         badges.append("shebang")
     can_scan = file.outcome in {"needs_attention", "error"} and file.upload_eligible
+    ext = name.rpartition(".")[2].lower() if "." in name else ""
     return {
         "index": file.index,
         "name": name,
@@ -94,6 +95,7 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
         "can_scan": can_scan,
         "too_large": file.outcome_reason == "upload_blocked",
         "size_limit_mb": _ABSOLUTE_UPLOAD_MB,
+        "extension": ext,
     }
 
 
