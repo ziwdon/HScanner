@@ -138,7 +138,9 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _group_needs_attention_by_risk(
+    files: list[dict[str, Any]], cap: int
+) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {
         "priority": [],
         "low_risk": [],
@@ -156,6 +158,7 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
             "files": group_files,
             "total": len(group_files),
             "hidden": 0,
+            "subgroups": _group_by_extension(group_files, cap),
         })
     return groups
 
@@ -163,13 +166,13 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
 def _group_by_extension(files: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
     by_ext: dict[str, list[dict[str, Any]]] = {}
     for file in files:
-        group = group_for_file_view(file)
-        by_ext.setdefault(group["key"] if group else "", []).append(file)
+        ext = file["extension"]
+        by_ext.setdefault(ext, []).append(file)
     groups = []
     for ext in sorted(by_ext):
         group_files = by_ext[ext]
         shown = group_files[:cap]
-        title = group_for_file_view(group_files[0])["title"]
+        title = "(no extension)" if ext == "" else f".{ext}"
         groups.append({
             "key": ext,
             "title": title,
@@ -215,7 +218,7 @@ def build_report_view(
             "has_batch_action": has_batch_action,
         }
         if outcome == "needs_attention":
-            risk_groups = _group_needs_attention_by_risk(files)
+            risk_groups = _group_needs_attention_by_risk(files, secondary_cap)
             section["groups"] = risk_groups
             section["risk_chips"] = [
                 {
