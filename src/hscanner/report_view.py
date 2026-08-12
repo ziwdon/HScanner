@@ -106,6 +106,17 @@ _RISK_GROUP_META = {
 }
 
 
+def tier_key_for_bucket(bucket: ClassificationBucket) -> str | None:
+    """Return the Needs attention tier key (`"priority"` / `"low_risk"`) for a
+    classification bucket, or ``None`` when the bucket is SKIPPED (or any tier
+    that doesn't map to a Needs attention subgroup). Single source of truth —
+    consumed by both ``group_for_file_view`` (view layer) and the batch
+    endpoint (`routes.py`) so the view and the backend never disagree."""
+    tier = risk_tier_for(bucket)
+    meta = _RISK_GROUP_META.get(tier.value)
+    return meta["key"] if meta is not None else None
+
+
 def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     """Resolve the grouping ``{"key", "title"}`` for a built file view, or
     ``None`` when the file's outcome section is flat (no grouping).
@@ -116,10 +127,10 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     """
     outcome = file_view["outcome_key"]
     if outcome == "needs_attention":
-        tier = risk_tier_for(ClassificationBucket(file_view["classification_bucket"]))
-        meta = _RISK_GROUP_META.get(tier.value)
-        if meta is None:
+        key = tier_key_for_bucket(ClassificationBucket(file_view["classification_bucket"]))
+        if key is None:
             return None
+        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
         return {"key": meta["key"], "title": meta["title"]}
     if outcome in {"no_detections", "skipped"}:
         ext = file_view["extension"]

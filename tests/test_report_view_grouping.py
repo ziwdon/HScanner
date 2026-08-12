@@ -13,7 +13,7 @@ from hscanner.models import (
 )
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import build_scan_report, classify_report_result
-from hscanner.report_view import build_report_view
+from hscanner.report_view import build_report_view, tier_key_for_bucket
 
 
 def _record(name: str) -> FileRecord:
@@ -191,3 +191,16 @@ def test_skipped_grouped_with_per_group_cap():
     assert groups["sh"]["total"] == 200
     assert groups["sh"]["hidden"] == 0
     assert len(groups["sh"]["files"]) == 200
+
+
+@pytest.mark.parametrize(
+    ("bucket", "expected"),
+    [
+        (ClassificationBucket.UPLOAD_CANDIDATE, "priority"),
+        (ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED, "priority"),
+        (ClassificationBucket.HASH_ONLY, "low_risk"),
+        (ClassificationBucket.SKIPPED, None),
+    ],
+)
+def test_tier_key_for_bucket_maps_each_classification_bucket(bucket, expected):
+    assert tier_key_for_bucket(bucket) == expected
