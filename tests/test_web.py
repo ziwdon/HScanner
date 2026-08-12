@@ -589,3 +589,173 @@ def test_base_html_references_latest_app_css_cache_buster() -> None:
     )
     text = base.read_text(encoding="utf-8")
     assert "app.css?v=9" in text
+
+
+# ---------------------------------------------------------------------------
+# Task 4: scan-unverified accepts {"target": ...} body to scope by tier.
+# ---------------------------------------------------------------------------
+
+
+def _nap_task4_results():
+    """Four needs-attention results: two priority upload-eligible
+    (UPLOAD_CANDIDATE), one low_risk upload-eligible (HASH_ONLY), one
+    priority-tier but NOT upload-eligible (SUSPICIOUS_UPLOAD_BLOCKED) which
+    must remain excluded by the upload-eligibility layer regardless of the
+    tier filter. Returns ``(results, root)``."""
+    from hscanner.classifier import classify_file
+    from hscanner.models import (
+        ClassificationBucket,
+        FileRecord,
+        FileResult,
+        LookupStatus,
+    )
+    from hscanner.policy.loader import load_default_policy
+    from hscanner.report import classify_report_result
+
+    root = Path("/scan")
+
+    def _needs(name, bucket, *, upload_eligible=True):
+        rec = FileRecord(
+            root=root,
+            path=root / name,
+            size=100,
+            mtime_ns=0,
+            mode=0o644,
+            is_symlink=False,
+            is_regular=True,
+            is_hidden=False,
+        )
+        cls = classify_file(rec, load_default_policy())
+        cls.bucket = bucket
+        res = FileResult(
+            record=rec, classification=cls, lookup_status=LookupStatus.NOT_FOUND
+        )
+        res.classification.upload_eligible = upload_eligible
+        return classify_report_result(res)
+
+    results = [
+        _needs("prio1.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("prio2.sh", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("low1.txt", ClassificationBucket.HASH_ONLY),
+        _needs(
+            "blocked.exe",
+            ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+            upload_eligible=False,
+        ),
+    ]
+    return results, root
+
+
+def _nap_task4_stub_engine():
+    """A no-network stub ScanEngine used only to satisfy the batch runner's
+    client construction; the runner fails at hashing (phantom files) before any
+    engine method is invoked, so these methods are defensive only."""
+    from hscanner.engines.base import EngineFileReport, EngineInfo
+
+    class _Stub:
+        def __init__(self, engine_id):
+            self.info = EngineInfo(
+                id=engine_id, display_name="Stub", default_per_minute=4
+            )
+
+        async def get_file_report(self, sha256):
+            return EngineFileReport(
+                engine_stats={"malicious": 0, "undetected": 60},
+                assessment_complete=True,
+                raw={"data": {}},
+            )
+
+        async def upload_file(self, path):
+            raise AssertionError("upload must not be called")
+
+        async def close(self):
+            pass
+
+    return _Stub
+
+
+def _nap_task4_app_and_client(monkeypatch, tmp_path):
+    """Create an app + TestClient with a stub engine factory, an env-resolved
+    VT key, and XDG_STATE_HOME pointed at a tmp path so no real state DB or
+    network is touched."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("HS_API_KEY_VIRUSTOTAL", "nap-task4-fake-key")
+    stub = _nap_task4_stub_engine()
+    app = create_app(
+        report_registry=ReportRegistry(),
+        engine_factory=lambda engine_id, key: stub(engine_id),
+    )
+    return app, TestClient(app)
+
+
+def _nap_task4_report_and_register(app, results, root, report_id):
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: report_id,
+    )
+    app.state.report_registry.put(report)
+    return report
+
+
+def test_scan_unverified_target_filters_by_tier(tmp_path, monkeypatch):
+    results, root = _nap_task4_results()
+    app, client = _nap_task4_app_and_client(monkeypatch, tmp_path)
+    report = _nap_task4_report_and_register(
+        app, results, root, "nap-task4-target-report"
+    )
+
+    r = client.post(
+        "/reports/nap-task4-target-report/scan-unverified",
+        json={"target": "priority"},
+    )
+    assert r.status_code == 202, r.text
+    indices = r.json()["indices"]
+    paths = {report.files[i].relative_path for i in indices}
+    assert paths == {"prio1.exe", "prio2.sh"}, paths
+
+    # No body -> all three upload-eligible candidates (blocked stays excluded).
+    # Use a fresh report id so the active-batch check doesn't return the
+    # previous sub-case's running job.
+    app2, client2 = _nap_task4_app_and_client(monkeypatch, tmp_path)
+    report2 = _nap_task4_report_and_register(
+        app2, results, root, "nap-task4-target-all"
+    )
+    r = client2.post("/reports/nap-task4-target-all/scan-unverified")
+    assert r.status_code == 202, r.text
+    paths = {report2.files[i].relative_path for i in r.json()["indices"]}
+    assert paths == {"prio1.exe", "prio2.sh", "low1.txt"}, paths
+
+
+def test_scan_unverified_target_low_risk(tmp_path, monkeypatch):
+    results, root = _nap_task4_results()
+    app, client = _nap_task4_app_and_client(monkeypatch, tmp_path)
+    report = _nap_task4_report_and_register(
+        app, results, root, "nap-task4-target-low"
+    )
+
+    r = client.post(
+        "/reports/nap-task4-target-low/scan-unverified",
+        json={"target": "low_risk"},
+    )
+    assert r.status_code == 202, r.text
+    indices = r.json()["indices"]
+    paths = {report.files[i].relative_path for i in indices}
+    assert paths == {"low1.txt"}, paths
+
+
+def test_scan_unverified_unknown_target_returns_400(tmp_path, monkeypatch):
+    results, root = _nap_task4_results()
+    app, client = _nap_task4_app_and_client(monkeypatch, tmp_path)
+    _nap_task4_report_and_register(
+        app, results, root, "nap-task4-target-unknown"
+    )
+
+    r = client.post(
+        "/reports/nap-task4-target-unknown/scan-unverified",
+        json={"target": "weird"},
+    )
+    assert r.status_code == 400, r.text
+    assert "unknown target" in r.json()["error"], r.text

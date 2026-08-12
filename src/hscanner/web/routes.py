@@ -46,6 +46,7 @@ from hscanner.report_view import (
     build_report_view,
     group_for_file_view,
     outcome_section_meta,
+    tier_key_for_bucket,
 )
 from hscanner.scanner import run_online_scan, scan_single_file, scan_single_file_with_rotation
 from hscanner.state import ScanState
@@ -683,11 +684,27 @@ async def scan_unverified(request: Request, report_id: str) -> Response:
     report = registry.get(report_id)
     if report is None:
         return JSONResponse({"error": "report expired or unavailable"}, status_code=404)
-    indices = [
-        f.index
-        for f in report.files
-        if _is_unresolved_scan_candidate(f)
-    ]
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    target = (body or {}).get("target", "all")
+    if target not in {"all", "priority", "low_risk"}:
+        return JSONResponse(
+            {"error": f"unknown target: {target}"}, status_code=400,
+        )
+
+    indices = [f.index for f in report.files if _is_unresolved_scan_candidate(f)]
+    if target != "all":
+        indices = [
+            i
+            for i in indices
+            if tier_key_for_bucket(
+                ClassificationBucket(report.files[i].classification_bucket)
+            )
+            == target
+        ]
     if not indices:
         return JSONResponse({"indices": [], "active": False}, status_code=202)
     manager = request.app.state.batch_file_scan_manager
