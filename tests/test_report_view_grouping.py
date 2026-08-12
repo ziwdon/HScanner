@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 
 from hscanner.classifier import classify_file
-from hscanner.models import FileRecord, FileResult
+from hscanner.models import (
+    ClassificationBucket,
+    FileRecord,
+    FileResult,
+    LookupStatus,
+    OutcomeReason,
+    ScanOutcome,
+)
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import build_scan_report, classify_report_result
 from hscanner.report_view import build_report_view
@@ -50,3 +57,78 @@ def test_build_file_view_exposes_extension(name, expected):
                 assert file["extension"] == expected
                 return
     pytest.fail(f"file {name!r} not found in any section")
+
+
+def _needs_attention_result(name: str, bucket: ClassificationBucket):
+    rec = _record(name)
+    cls = _classified(rec)
+    cls.bucket = bucket
+    res = classify_report_result(FileResult(
+        record=rec, classification=cls,
+        lookup_status=LookupStatus.NOT_FOUND,
+    ))
+    res.outcome = ScanOutcome.NEEDS_ATTENTION
+    res.outcome_reason = OutcomeReason.ENGINE_NOT_FOUND
+    return res
+
+
+def test_needs_attention_section_has_priority_and_low_risk_groups():
+    results = [
+        _needs_attention_result("tool.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs_attention_result("notes.txt", ClassificationBucket.HASH_ONLY),
+        _needs_attention_result("big.exe", ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED),
+        _needs_attention_result("misc.dat", ClassificationBucket.HASH_ONLY),
+    ]
+    report = build_scan_report(Path("/scan"), results, online=True, upload_consent=False)
+    view = build_report_view(report)
+
+    needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
+    assert [g["key"] for g in needs["groups"]] == ["priority", "low_risk"]
+    priority_names = {f["name"] for f in needs["groups"][0]["files"]}
+    low_names = {f["name"] for f in needs["groups"][1]["files"]}
+    assert priority_names == {"tool.exe", "big.exe"}
+    assert low_names == {"notes.txt", "misc.dat"}
+    assert needs["groups"][0]["total"] == 2
+    assert needs["groups"][1]["total"] == 2
+    for group in needs["groups"]:
+        assert group["hidden"] == 0
+
+
+def test_needs_attention_section_exposes_risk_chips_and_filters():
+    results = [
+        _needs_attention_result("tool.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs_attention_result("notes.txt", ClassificationBucket.HASH_ONLY),
+        _needs_attention_result("big.exe", ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED),
+    ]
+    report = build_scan_report(Path("/scan"), results, online=True, upload_consent=False)
+    view = build_report_view(report)
+    needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
+
+    chips = needs["risk_chips"]
+    assert [c["key"] for c in chips] == ["priority", "low_risk"]
+    assert {c["count"] for c in chips} == {2, 1}
+    assert all("sev" in c and "label" in c for c in chips)
+
+    filters = needs["filters"]
+    assert [f["key"] for f in filters] == ["all", "priority", "low_risk"]
+    assert filters[0]["pressed"] is True
+    assert all(not f["pressed"] for f in filters[1:])
+    assert all("label" in f for f in filters)
+
+
+def test_infected_and_errors_sections_have_no_groups_key():
+    rec = _record("tool.exe")
+    cls = _classified(rec)
+    res = classify_report_result(FileResult(
+        record=rec, classification=cls,
+        lookup_status=LookupStatus.NOT_FOUND,
+    ))
+    res.outcome = ScanOutcome.INFECTED
+    res.outcome_reason = OutcomeReason.ENGINE_DETECTION
+    report = build_scan_report(Path("/scan"), [res], online=True, upload_consent=False)
+    view = build_report_view(report)
+    for outcome in ("infected", "error"):
+        section = next((s for s in view["sections"] if s["outcome"] == outcome), None)
+        if section is None:
+            continue
+        assert "groups" not in section

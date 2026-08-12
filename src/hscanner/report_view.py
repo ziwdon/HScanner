@@ -1,6 +1,7 @@
 from typing import Any
 
 from hscanner.engines.registry import ENGINES
+from hscanner.models import ClassificationBucket, RiskTier, risk_tier_for
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import ReportFile, ScanReport
 
@@ -99,6 +100,34 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
     }
 
 
+_RISK_GROUP_META = {
+    RiskTier.PRIORITY.value: {"key": "priority", "title": "Priority", "sev": "sev-high"},
+    RiskTier.LOW_RISK.value: {"key": "low_risk", "title": "Lower risk", "sev": "sev-unknown"},
+}
+
+
+def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        RiskTier.PRIORITY.value: [],
+        RiskTier.LOW_RISK.value: [],
+    }
+    for file in files:
+        tier = risk_tier_for(ClassificationBucket(file["classification_bucket"]))
+        buckets.setdefault(tier.value, []).append(file)
+    groups = []
+    for tier_value in (RiskTier.PRIORITY.value, RiskTier.LOW_RISK.value):
+        group_files = buckets.get(tier_value, [])
+        meta = _RISK_GROUP_META[tier_value]
+        groups.append({
+            "key": meta["key"],
+            "title": meta["title"],
+            "files": group_files,
+            "total": len(group_files),
+            "hidden": 0,
+        })
+    return groups
+
+
 def build_report_view(
     report: ScanReport,
     *,
@@ -123,7 +152,7 @@ def build_report_view(
             and any(file["can_scan"] for file in files)
         )
         batch_action_assigned = batch_action_assigned or has_batch_action
-        sections.append({
+        section = {
             "outcome": outcome,
             "id": anchor,
             "title": title,
@@ -132,7 +161,28 @@ def build_report_view(
             "total": len(files),
             "hidden": len(files) - len(shown),
             "has_batch_action": has_batch_action,
-        })
+        }
+        if outcome == "needs_attention":
+            risk_groups = _group_needs_attention_by_risk(files)
+            section["groups"] = risk_groups
+            section["risk_chips"] = [
+                {
+                    "key": g["key"],
+                    "label": g["title"],
+                    "count": g["total"],
+                    "sev": _RISK_GROUP_META[
+                        RiskTier.PRIORITY.value if g["key"] == "priority"
+                        else RiskTier.LOW_RISK.value
+                    ]["sev"],
+                }
+                for g in risk_groups
+            ]
+            section["filters"] = [
+                {"key": "all", "label": "All", "pressed": True},
+                {"key": "priority", "label": "Priority", "pressed": False},
+                {"key": "low_risk", "label": "Lower risk", "pressed": False},
+            ]
+        sections.append(section)
 
     summary = report.summary
     tiles = [
