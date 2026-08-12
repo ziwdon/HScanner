@@ -342,6 +342,80 @@ def test_file_scan_done_event_includes_group_field(
         assert terminal["file"].get("group_title"), terminal
 
 
+@pytest.mark.parametrize(
+    ("filename", "content", "factory", "expected_outcome", "expect_subgroup"),
+    [
+        (
+            "tool.exe",
+            "MZ\x90\x00binary",
+            lambda: _IncompleteNotFoundClient(),
+            "needs_attention",
+            True,
+        ),
+        (
+            "tool.exe",
+            "MZ\x90\x00binary",
+            lambda: _FoundClient(),
+            "no_detections",
+            False,
+        ),
+        (
+            "tool.sh",
+            "#!/bin/sh\necho hello\n",
+            lambda: _MaliciousFoundClient(),
+            "infected",
+            False,
+        ),
+    ],
+)
+def test_file_scan_done_event_subgroup_field_for_needs_attention(
+    filename, content, factory, expected_outcome, expect_subgroup, tmp_path, monkeypatch
+):
+    """The terminal SSE ``done`` payload emits ``subgroup``/``subgroup_title``
+    (the file's extension) ONLY for the ``needs_attention`` outcome, mirroring
+    the static report's needs-attention tier-subgroup contract. ``no_detections``
+    carries the extension group; ``infected`` carries neither group nor subgroup."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("HS_API_KEY_VIRUSTOTAL", raising=False)
+
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / filename).write_text(content)
+
+    engine = factory()
+    app, client = _make_app_and_client(vt_factory=lambda engine_id, key: engine)
+    report = _seed_report(app, scan_dir)
+    idx = _idx(report, filename)
+
+    resp = client.post(f"/reports/{report.report_id}/files/{idx}/scan")
+    assert resp.status_code == 202, resp.text
+    with client.stream("GET", f"/reports/{report.report_id}/files/{idx}/scan/events") as s:
+        events = _parse_sse("".join(s.iter_text()))
+
+    terminal = events[-1]
+    assert terminal["state"] == "done", events
+    assert terminal["outcome"] == expected_outcome, terminal
+    file_payload = terminal["file"]
+
+    if expected_outcome == "needs_attention":
+        assert expect_subgroup is True
+        assert file_payload["group"] == "priority", terminal
+        assert file_payload.get("group_title"), terminal
+        assert file_payload["subgroup"] == "exe", terminal
+        assert file_payload["subgroup_title"] == ".exe", terminal
+    elif expected_outcome == "no_detections":
+        assert expect_subgroup is False
+        assert file_payload["group"] == "exe", terminal
+        assert file_payload.get("group_title") == ".exe", terminal
+        assert "subgroup" not in file_payload, terminal
+        assert "subgroup_title" not in file_payload, terminal
+    elif expected_outcome == "infected":
+        assert expect_subgroup is False
+        assert "group" not in file_payload, terminal
+        assert "subgroup" not in file_payload, terminal
+        assert "subgroup_title" not in file_payload, terminal
+
+
 def test_combined_report_file_scan_uses_file_provenance_engine(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     scan_dir = tmp_path / "scan"

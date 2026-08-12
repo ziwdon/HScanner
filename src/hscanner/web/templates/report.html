@@ -66,7 +66,7 @@
         <span class="count">{{ section.total }}</span>
       </div>
       {% if section.has_batch_action %}
-      <button class="btn btn-scan-all" id="scan-all" type="button">Upload and scan all unverified</button>
+      <button class="btn btn-scan-all" id="scan-all" type="button" data-target="all">Upload and scan all unverified</button>
       {% endif %}
       {% if section.risk_chips %}
       <div class="risk-chips">
@@ -84,9 +84,21 @@
       {% for group in section.groups %}
       <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'priority' %} open{% endif %}>
         <summary class="group-head"><span class="caret" aria-hidden="true">▸</span> {{ group.title }} <span class="count">{{ group.total }}</span></summary>
+        {% if group.subgroups %}
+        {% for subgroup in group.subgroups %}
+        <details class="group subgroup" data-subgroup="{{ subgroup.key }}">
+          <summary class="group-head">{{ subgroup.title }} <span class="count">{{ subgroup.total }}</span></summary>
+          {% for f in subgroup.files %}{% include "_file_card.html" %}{% endfor %}
+          {% if subgroup.hidden %}
+          <p class="note">Showing first {{ subgroup.files | length }} of {{ subgroup.total }} in this group. Use JSON or CSV for the complete list.</p>
+          {% endif %}
+        </details>
+        {% endfor %}
+        {% else %}
         {% for f in group.files %}{% include "_file_card.html" %}{% endfor %}
         {% if group.hidden %}
         <p class="note">Showing first {{ group.files | length }} of {{ group.total }} in this group. Use JSON or CSV for the complete list.</p>
+        {% endif %}
         {% endif %}
       </details>
       {% endfor %}
@@ -126,10 +138,19 @@ document.querySelectorAll('.filter-pills').forEach((pills) => {
     chips.forEach((c) => {
       c.setAttribute('aria-pressed', String(c.dataset.filter === key && key !== 'all'));
     });
-    section.querySelectorAll('details.group').forEach((g) => {
+    section.querySelectorAll(':scope > details.group').forEach((g) => {
       const matches = key === 'all' || g.dataset.group === key;
       g.hidden = !matches;
     });
+    const scanAllBtn = section.querySelector('.btn-scan-all');
+    if (scanAllBtn) {
+      scanAllBtn.dataset.target = key;
+      scanAllBtn.textContent = key === 'all'
+        ? 'Upload and scan all unverified'
+        : key === 'priority'
+        ? 'Upload and scan all priority'
+        : 'Upload and scan all lower risk';
+    }
   });
 });
 document.querySelectorAll('.risk-chip').forEach((chip) => {
@@ -256,14 +277,15 @@ function applyFileUpdate(data) {
   template.innerHTML = data.file_card_html.trim();
   const card = template.content.firstElementChild;
   if (!card) return;
-  if ('group' in data.file) {
-    const groupKey = data.file.group;
+
+  const groupKey = data.file.group;
+  if (groupKey) {
     let group = destination.querySelector(`details.group[data-group="${CSS.escape(groupKey)}"]`);
     if (!group) {
       group = document.createElement('details');
       group.className = 'group';
       group.dataset.group = groupKey;
-      const groupTitle = data.file.group_title || (groupKey === '' ? '(no extension)' : groupKey);
+      const groupTitle = data.file.group_title || groupKey;
       const summary = document.createElement('summary');
       summary.className = 'group-head';
       summary.innerHTML = `<span class="caret" aria-hidden="true">▸</span> ${groupTitle} <span class="count">0</span>`;
@@ -273,12 +295,31 @@ function applyFileUpdate(data) {
       }
       destination.appendChild(group);
     }
-    group.appendChild(card);
+
+    const subgroupKey = data.file.subgroup;
+    if (subgroupKey !== undefined) {
+      let subgroup = group.querySelector(`details.group.subgroup[data-subgroup="${CSS.escape(subgroupKey)}"]`);
+      if (!subgroup) {
+        subgroup = document.createElement('details');
+        subgroup.className = 'group subgroup';
+        subgroup.dataset.subgroup = subgroupKey;
+        const subgroupTitle = data.file.subgroup_title || (subgroupKey === '' ? '(no extension)' : `.${subgroupKey}`);
+        const subgroupSummary = document.createElement('summary');
+        subgroupSummary.className = 'group-head';
+        subgroupSummary.innerHTML = `${subgroupTitle} <span class="count">0</span>`;
+        subgroup.appendChild(subgroupSummary);
+        group.appendChild(subgroup);
+      }
+      subgroup.appendChild(card);
+    } else {
+      group.appendChild(card);
+    }
     const groupCount = group.querySelector(':scope > .group-head .count');
     if (groupCount) groupCount.textContent = group.querySelectorAll('details.file').length;
   } else {
     destination.appendChild(card);
   }
+
   updateSectionCount(previousSection);
   updateSectionCount(destination);
   destination.hidden = false;
@@ -440,6 +481,7 @@ document.addEventListener('click', (event) => {
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('.btn-scan-all');
   if (!button) return;
+  const target = button.dataset.target || 'all';
   setScanAllDisabled(true);
   lastBatchPath = BATCH_CANDIDATE_PATHS[0] || null;
   setUploadProgress(
@@ -449,7 +491,14 @@ document.addEventListener('click', async (event) => {
   );
   let response;
   try {
-    response = await fetch(`/reports/${REPORT_ID}/scan-unverified`, {method: 'POST'});
+    response = await fetch(
+      `/reports/${REPORT_ID}/scan-unverified`,
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target}),
+      },
+    );
   } catch {
     setUploadProgress(0, 0, 'Connection failed while preparing upload queue');
     setScanAllDisabled(false);

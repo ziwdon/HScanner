@@ -106,6 +106,17 @@ _RISK_GROUP_META = {
 }
 
 
+def tier_key_for_bucket(bucket: ClassificationBucket) -> str | None:
+    """Return the Needs attention tier key (`"priority"` / `"low_risk"`) for a
+    classification bucket, or ``None`` when the bucket is SKIPPED (or any tier
+    that doesn't map to a Needs attention subgroup). Single source of truth —
+    consumed by both ``group_for_file_view`` (view layer) and the batch
+    endpoint (`routes.py`) so the view and the backend never disagree."""
+    tier = risk_tier_for(bucket)
+    meta = _RISK_GROUP_META.get(tier.value)
+    return meta["key"] if meta is not None else None
+
+
 def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     """Resolve the grouping ``{"key", "title"}`` for a built file view, or
     ``None`` when the file's outcome section is flat (no grouping).
@@ -116,10 +127,10 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     """
     outcome = file_view["outcome_key"]
     if outcome == "needs_attention":
-        tier = risk_tier_for(ClassificationBucket(file_view["classification_bucket"]))
-        meta = _RISK_GROUP_META.get(tier.value)
-        if meta is None:
+        key = tier_key_for_bucket(ClassificationBucket(file_view["classification_bucket"]))
+        if key is None:
             return None
+        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
         return {"key": meta["key"], "title": meta["title"]}
     if outcome in {"no_detections", "skipped"}:
         ext = file_view["extension"]
@@ -127,7 +138,9 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _group_needs_attention_by_risk(
+    files: list[dict[str, Any]], cap: int
+) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {
         "priority": [],
         "low_risk": [],
@@ -145,6 +158,7 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
             "files": group_files,
             "total": len(group_files),
             "hidden": 0,
+            "subgroups": _group_by_extension(group_files, cap),
         })
     return groups
 
@@ -152,13 +166,13 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
 def _group_by_extension(files: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
     by_ext: dict[str, list[dict[str, Any]]] = {}
     for file in files:
-        group = group_for_file_view(file)
-        by_ext.setdefault(group["key"] if group else "", []).append(file)
+        ext = file["extension"]
+        by_ext.setdefault(ext, []).append(file)
     groups = []
     for ext in sorted(by_ext):
         group_files = by_ext[ext]
         shown = group_files[:cap]
-        title = group_for_file_view(group_files[0])["title"]
+        title = "(no extension)" if ext == "" else f".{ext}"
         groups.append({
             "key": ext,
             "title": title,
@@ -204,7 +218,7 @@ def build_report_view(
             "has_batch_action": has_batch_action,
         }
         if outcome == "needs_attention":
-            risk_groups = _group_needs_attention_by_risk(files)
+            risk_groups = _group_needs_attention_by_risk(files, secondary_cap)
             section["groups"] = risk_groups
             section["risk_chips"] = [
                 {
