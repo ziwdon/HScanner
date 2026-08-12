@@ -68,9 +68,33 @@
       {% if section.has_batch_action %}
       <button class="btn btn-scan-all" id="scan-all" type="button">Upload and scan all unverified</button>
       {% endif %}
+      {% if section.risk_chips %}
+      <div class="risk-chips">
+        {% for chip in section.risk_chips %}
+        <button type="button" class="risk-chip sevbox {{ chip.sev }}" data-filter="{{ chip.key }}">{{ chip.label }} <b>{{ chip.count }}</b></button>
+        {% endfor %}
+      </div>
+      <div class="filter-pills" role="group" aria-label="Needs attention filter">
+        {% for pill in section.filters %}
+        <button type="button" class="filter-pill" data-filter="{{ pill.key }}" aria-pressed="{{ 'true' if pill.pressed else 'false' }}">{{ pill.label }}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if section.groups %}
+      {% for group in section.groups %}
+      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'priority' %} open{% endif %}>
+        <summary class="group-head"><span class="caret" aria-hidden="true">▸</span> {{ group.title }} <span class="count">{{ group.total }}</span></summary>
+        {% for f in group.files %}{% include "_file_card.html" %}{% endfor %}
+        {% if group.hidden %}
+        <p class="note">Showing first {{ group.files | length }} of {{ group.total }} in this group. Use JSON or CSV for the complete list.</p>
+        {% endif %}
+      </details>
+      {% endfor %}
+      {% else %}
       {% for f in section.files %}{% include "_file_card.html" %}{% endfor %}
       {% if section.hidden %}
       <p class="note">Showing the first {{ section.files | length }} of {{ section.total }}. Use JSON or CSV for the complete list.</p>
+      {% endif %}
       {% endif %}
     </section>
     {% endfor %}
@@ -89,6 +113,34 @@ const FILE_PATHS = {{ view.file_paths | tojson }};
 const BATCH_CANDIDATE_PATHS = {{ view.batch_candidate_paths | tojson }};
 // Pinned to report_view._OUTCOME_ORDER.
 const SECTION_ORDER = ['infected', 'needs_attention', 'no_detections', 'skipped', 'error'];
+document.querySelectorAll('.filter-pills').forEach((pills) => {
+  const section = pills.closest('section');
+  pills.addEventListener('click', (event) => {
+    const btn = event.target.closest('.filter-pill');
+    if (!btn) return;
+    const key = btn.dataset.filter;
+    pills.querySelectorAll('.filter-pill').forEach((p) => {
+      p.setAttribute('aria-pressed', String(p === btn));
+    });
+    const chips = section.querySelectorAll('.risk-chip');
+    chips.forEach((c) => {
+      c.setAttribute('aria-pressed', String(c.dataset.filter === key && key !== 'all'));
+    });
+    section.querySelectorAll('details.group').forEach((g) => {
+      const matches = key === 'all' || g.dataset.group === key;
+      g.hidden = !matches;
+    });
+  });
+});
+document.querySelectorAll('.risk-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    const key = chip.dataset.filter;
+    const section = chip.closest('section');
+    const pills = section.querySelector('.filter-pills');
+    const target = pills && pills.querySelector(`.filter-pill[data-filter="${key}"]`);
+    if (target) target.click();
+  });
+});
 const uploadProgress = document.getElementById('upload-progress');
 const uploadProgressTitle = document.getElementById('upload-progress-title');
 const uploadProgressCount = document.getElementById('upload-progress-count');

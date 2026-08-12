@@ -451,3 +451,63 @@ async def test_scan_renders_outcome_report_with_navigation(tmp_path) -> None:
     assert "/scan-unverified/active" in response.text
     assert "/cancel" in response.text
     assert "tool.sh" in response.text
+
+
+def test_report_view_renders_needs_attention_groups_and_filters(tmp_path):
+    from hscanner.classifier import classify_file
+    from hscanner.models import (
+        ClassificationBucket,
+        FileRecord,
+        FileResult,
+        LookupStatus,
+        OutcomeReason,
+        ScanOutcome,
+    )
+    from hscanner.policy.loader import load_default_policy
+    from hscanner.report import build_scan_report, classify_report_result
+
+    root = Path("/scan")
+
+    def _needs(name, bucket):
+        rec = FileRecord(
+            root=root,
+            path=root / name,
+            size=100,
+            mtime_ns=0,
+            mode=0o644,
+            is_symlink=False,
+            is_regular=True,
+            is_hidden=False,
+        )
+        cls = classify_file(rec, load_default_policy())
+        cls.bucket = bucket
+        res = FileResult(
+            record=rec, classification=cls, lookup_status=LookupStatus.NOT_FOUND
+        )
+        res.outcome = ScanOutcome.NEEDS_ATTENTION
+        res.outcome_reason = OutcomeReason.ENGINE_NOT_FOUND
+        return classify_report_result(res)
+
+    results = [
+        _needs("tool.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("notes.txt", ClassificationBucket.HASH_ONLY),
+    ]
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "nap-task4-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+
+    response = TestClient(app).get("/reports/nap-task4-report")
+    body = response.text
+    assert '<details class="group" data-group="priority"' in body
+    assert '<details class="group" data-group="low_risk"' in body
+    assert 'class="risk-chips"' in body
+    assert 'class="filter-pills"' in body
+    assert 'data-filter="all"' in body
+    assert 'data-filter="priority"' in body
+    assert 'data-filter="low_risk"' in body
