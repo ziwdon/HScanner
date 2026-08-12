@@ -173,6 +173,104 @@ async def test_terminal_no_threat_hash_result_maps_to_no_detections_report_outco
     assert result.outcome == ScanOutcome.NO_DETECTIONS
 
 
+def _engine_report_to_result(engine_report):
+    record = FileRecord(
+        root=Path("/scan"),
+        path=Path("/scan/tool.exe"),
+        size=1024,
+        mtime_ns=1,
+        mode=0o100644,
+        is_symlink=False,
+        is_regular=True,
+        is_hidden=False,
+    )
+    return FileResult(
+        record=record,
+        classification=Classification(
+            ClassificationBucket.UPLOAD_CANDIDATE,
+            "default fallback upload candidate",
+            upload_eligible=True,
+            hash_eligible=True,
+            suspicious=True,
+        ),
+        lookup_status=LookupStatus.FOUND,
+        assessment_complete=engine_report.assessment_complete,
+        engine_stats=dict(engine_report.engine_stats),
+        detections=[dict(detection) for detection in engine_report.detections],
+    )
+
+
+@pytest.mark.asyncio
+async def test_per_av_unavailable_engine_with_threat_found_text_is_not_a_detection(
+    httpx_mock,
+):
+    """Regression: a per-AV engine that is permanently_failed (scan_result_i=10) but whose
+    threat_found text is non-empty (e.g. "Unavailable (permanently_failed)") must NOT be
+    reported as a malicious/suspicious detection. The overall scan verdict is the
+    authoritative signal: total_detected_avs==0 + scan_all_result_a=="No Threat Detected"
+    must yield outcome == no_detections, never infected."""
+    body = _found_body(0, 30)
+    body["scan_results"]["scan_details"] = {
+        "Bitdefender": {
+            "threat_found": "Unavailable (permanently_failed)",
+            "scan_result_i": 10,
+        },
+        "AegisLab": {"threat_found": "", "scan_result_i": 0},
+    }
+    httpx_mock.add_response(url=f"{_MD}/hash/abc", json=body)
+    engine = MetaDefenderEngine("k")
+    engine_report = await engine.get_file_report("abc")
+    await engine.close()
+
+    assert engine_report is not None
+    assert engine_report.engine_stats == {"malicious": 0, "undetected": 30}
+    assert engine_report.detections == []
+    assert engine_report.assessment_complete is True
+
+    result = classify_report_result(_engine_report_to_result(engine_report))
+    assert result.outcome == ScanOutcome.NO_DETECTIONS
+
+
+@pytest.mark.asyncio
+async def test_per_av_failed_engine_with_threat_found_text_is_not_a_detection(httpx_mock):
+    """scan_result_i=3 (Failed) and other engine-failure codes (>=3) with non-empty
+    threat_found text must not be treated as detections."""
+    body = _found_body(0, 30)
+    body["scan_results"]["scan_details"] = {
+        "Avira": {"threat_found": "Scan failed", "scan_result_i": 3},
+        "RandomAV": {"threat_found": "Engine error", "scan_result_i": 23},
+        "CleanAV": {"threat_found": "", "scan_result_i": 0},
+    }
+    httpx_mock.add_response(url=f"{_MD}/hash/abc", json=body)
+    engine = MetaDefenderEngine("k")
+    engine_report = await engine.get_file_report("abc")
+    await engine.close()
+
+    assert engine_report is not None
+    assert engine_report.detections == []
+    assert engine_report.engine_stats == {"malicious": 0, "undetected": 30}
+
+
+@pytest.mark.asyncio
+async def test_per_av_suspicious_code_maps_to_suspicious_category(httpx_mock):
+    """scan_result_i=2 (Suspicious) with non-empty threat_found becomes a detection with
+    category="suspicious" (not "malicious")."""
+    body = _found_body(1, 30)
+    body["scan_results"]["scan_details"] = {
+        "NervousAV": {"threat_found": "Heuristic.Match", "scan_result_i": 2},
+        "CleanAV": {"threat_found": "", "scan_result_i": 0},
+    }
+    httpx_mock.add_response(url=f"{_MD}/hash/abc", json=body)
+    engine = MetaDefenderEngine("k")
+    engine_report = await engine.get_file_report("abc")
+    await engine.close()
+
+    assert engine_report is not None
+    assert engine_report.detections == [
+        {"engine": "NervousAV", "category": "suspicious", "name": "Heuristic.Match"}
+    ]
+
+
 @pytest.mark.asyncio
 async def test_hash_not_found_returns_none(httpx_mock):
     httpx_mock.add_response(

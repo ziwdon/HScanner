@@ -7,6 +7,29 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Bugfix: MetaDefender per-AV `scan_result_i` codes ≥ 3 are NOT detections — FIXED (2026-08-12).**
+>
+> **Symptom:** a file with `0/30` detections and `scan_all_result_a == "No Threat Detected"`
+> was being reported as Infected because one AV in `scan_details` (Bitdefender) had
+> `scan_result_i == 10` (`Unavailable` / `permanently_failed`) with a non-empty `threat_found`
+> text `"Unavailable (permanently_failed)"`. The old parser took any
+> `threat_found` truthy AND `scan_result_i != 0` as a malicious detection, but
+> MetaDefender's per-AV `scan_result_i` has many non-zero codes that describe engine
+> failures/unavailability, not malware (3 = Failed, 4 = Not scanned, 10 = Unavailable,
+> engine-specific failure codes…). The single spurious detection was enough to flip the
+> outcome to `INFECTED`.
+> **Fix:** `MetaDefenderEngine._to_report` now only emits a detection when `scan_result_i`
+> is one of the actual detection codes — `1` (Infected) → `category="malicious"`,
+> `2` (Suspicious) → `category="suspicious"`; all other codes (including `0` and any
+> failure code ≥ 3) are not detections. The malformed-`scan_result_i` guard
+> (`_parse_int(allow_none=False)` raising `ENGINE_CLIENT_ERROR` on `None`) is preserved.
+> **Spec:** updated `docs/superpowers/specs/2026-06-22-multi-engine-hscanner-design.md`
+> (MetaDefender normalization bullets + a new "Never imply infected from engine failures"
+> rule that parallels "Never imply safe").
+> **Verification:** 3 new regression tests in `tests/test_metadefender_engine.py`;
+> full pytest suite (483 tests) passing; Ruff clean. Existing cached reports are NOT
+> rewritten — re-scan (or `--refresh`) to refresh a previously affected file.
+
 > **Sub-project J: combined default + include-subfolders toggle — IMPLEMENTED (2026-08-10).**
 >
 > **Shipped:** web scan form lists the Combined engine card first and selected by default

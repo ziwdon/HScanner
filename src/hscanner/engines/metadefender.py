@@ -20,6 +20,14 @@ _TERMINAL_SCAN_LABELS = {
     "infected",
     "no threat detected",
 }
+# Per-AV scan_result_i codes that represent actual threat findings. Other non-zero codes
+# (3 = Failed, 4 = Not scanned, 10 = Unavailable / permanently_failed, and other
+# engine-specific failure codes) describe engine-level unavailability, not malware; some of
+# them still populate `threat_found` with a non-threat string such as
+# "Unavailable (permanently_failed)" and must NOT be treated as detections.
+_MALICIOUS_RESULT_CODE = 1
+_SUSPICIOUS_RESULT_CODE = 2
+_DETECTED_RESULT_CODES = frozenset({_MALICIOUS_RESULT_CODE, _SUSPICIOUS_RESULT_CODE})
 
 
 class MetaDefenderEngine(EngineHttpMixin):
@@ -185,14 +193,25 @@ class MetaDefenderEngine(EngineHttpMixin):
         details = sr.get("scan_details", {}) or {}
         if not isinstance(details, dict):
             details = {}
-        detections = [
-            {"engine": str(name), "category": "malicious", "name": str(info.get("threat_found"))}
-            for name, info in sorted(details.items())
-            if isinstance(info, dict) and info.get("threat_found")
-            and self._parse_int(
+        detections = []
+        for name, info in sorted(details.items()):
+            if not isinstance(info, dict):
+                continue
+            threat = info.get("threat_found")
+            if not threat:
+                continue
+            code = self._parse_int(
                 info.get("scan_result_i"), "scan_result_i", allow_none=False
-            ) != 0
-        ]
+            )
+            if code == _MALICIOUS_RESULT_CODE:
+                category = "malicious"
+            elif code == _SUSPICIOUS_RESULT_CODE:
+                category = "suspicious"
+            else:
+                continue
+            detections.append(
+                {"engine": str(name), "category": category, "name": str(threat)}
+            )
         return EngineFileReport(
             engine_stats=stats,
             detections=detections,
