@@ -180,7 +180,7 @@ def test_base_template_does_not_fetch_external_fonts() -> None:
     assert response.status_code == 200
     assert "fonts.googleapis.com" not in response.text
     assert "fonts.gstatic.com" not in response.text
-    assert "/static/app.css?v=8" in response.text
+    assert "/static/app.css?v=9" in response.text
 
 
 def test_export_menu_stacks_above_report_content_below_topbar() -> None:
@@ -574,3 +574,18 @@ def test_report_view_renders_extension_groups_for_no_detections(tmp_path):
     nodet_html = nodet_match.group(0)
     assert '<details class="group" data-group="' in nodet_html
     assert "Showing first 500 of" in nodet_html or 'details class="group"' in nodet_html
+
+
+def test_base_html_references_latest_app_css_cache_buster() -> None:
+    from pathlib import Path
+
+    base = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "hscanner"
+        / "web"
+        / "templates"
+        / "base.html"
+    )
+    text = base.read_text(encoding="utf-8")
+    assert "app.css?v=9" in text
