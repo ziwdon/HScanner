@@ -41,7 +41,12 @@ from hscanner.models import (
 from hscanner.policy.loader import load_default_policy, parse_quota_policy
 from hscanner.progress import EventType
 from hscanner.report import build_scan_report
-from hscanner.report_view import build_file_view, build_report_view, outcome_section_meta
+from hscanner.report_view import (
+    build_file_view,
+    build_report_view,
+    group_for_file_view,
+    outcome_section_meta,
+)
 from hscanner.scanner import run_online_scan, scan_single_file, scan_single_file_with_rotation
 from hscanner.state import ScanState
 from hscanner.store import open_global_store, open_scan_store
@@ -546,13 +551,18 @@ def _render_file_card(file_view: dict) -> str:
 def _live_file_payload(file) -> dict:
     file_view = build_file_view(file)
     section = outcome_section_meta(file.outcome)
+    payload = {
+        "index": file_view["index"],
+        "outcome": file_view["outcome_key"],
+        "title": file_view["outcome"],
+        "can_scan": file_view["can_scan"],
+    }
+    group = group_for_file_view(file_view)
+    if group is not None:
+        payload["group"] = group["key"]
+        payload["group_title"] = group["title"]
     return {
-        "file": {
-            "index": file_view["index"],
-            "outcome": file_view["outcome_key"],
-            "title": file_view["outcome"],
-            "can_scan": file_view["can_scan"],
-        },
+        "file": payload,
         "section": section,
         "file_card_html": _render_file_card(file_view),
     }

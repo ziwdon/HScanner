@@ -106,20 +106,41 @@ _RISK_GROUP_META = {
 }
 
 
+def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
+    """Resolve the grouping ``{"key", "title"}`` for a built file view, or
+    ``None`` when the file's outcome section is flat (no grouping).
+
+    Shared by the static report render grouping (``_group_needs_attention_by_risk``,
+    ``_group_by_extension``) and the live single-file update payload so both
+    paths place a file in the same group with the same label.
+    """
+    outcome = file_view["outcome_key"]
+    if outcome == "needs_attention":
+        tier = risk_tier_for(ClassificationBucket(file_view["classification_bucket"]))
+        meta = _RISK_GROUP_META.get(tier.value)
+        if meta is None:
+            return None
+        return {"key": meta["key"], "title": meta["title"]}
+    if outcome in {"no_detections", "skipped"}:
+        ext = file_view["extension"]
+        return {"key": ext, "title": "(no extension)" if ext == "" else f".{ext}"}
+    return None
+
+
 def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {
-        RiskTier.PRIORITY.value: [],
-        RiskTier.LOW_RISK.value: [],
+        "priority": [],
+        "low_risk": [],
     }
     for file in files:
-        tier = risk_tier_for(ClassificationBucket(file["classification_bucket"]))
-        buckets.setdefault(tier.value, []).append(file)
+        group = group_for_file_view(file)
+        buckets.setdefault(group["key"] if group else "priority", []).append(file)
     groups = []
-    for tier_value in (RiskTier.PRIORITY.value, RiskTier.LOW_RISK.value):
-        group_files = buckets.get(tier_value, [])
-        meta = _RISK_GROUP_META[tier_value]
+    for key in ("priority", "low_risk"):
+        group_files = buckets.get(key, [])
+        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
         groups.append({
-            "key": meta["key"],
+            "key": key,
             "title": meta["title"],
             "files": group_files,
             "total": len(group_files),
@@ -131,14 +152,16 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
 def _group_by_extension(files: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
     by_ext: dict[str, list[dict[str, Any]]] = {}
     for file in files:
-        by_ext.setdefault(file["extension"], []).append(file)
+        group = group_for_file_view(file)
+        by_ext.setdefault(group["key"] if group else "", []).append(file)
     groups = []
     for ext in sorted(by_ext):
         group_files = by_ext[ext]
         shown = group_files[:cap]
+        title = group_for_file_view(group_files[0])["title"]
         groups.append({
             "key": ext,
-            "title": "(no extension)" if ext == "" else f".{ext}",
+            "title": title,
             "files": shown,
             "total": len(group_files),
             "hidden": len(group_files) - len(shown),

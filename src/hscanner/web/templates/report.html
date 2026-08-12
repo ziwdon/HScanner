@@ -185,7 +185,7 @@ function updateSummaryTiles(summary) {
 function updateSectionCount(section) {
   if (!section) return;
   const count = section.querySelector(':scope > .section-head .count');
-  const total = section.querySelectorAll(':scope > details.file').length;
+  const total = section.querySelectorAll('details.file').length;
   if (count) count.textContent = total;
   const navLink = document.querySelector(`.report-nav a[href="#${section.id}"] b`);
   if (navLink) navLink.textContent = total;
@@ -256,7 +256,29 @@ function applyFileUpdate(data) {
   template.innerHTML = data.file_card_html.trim();
   const card = template.content.firstElementChild;
   if (!card) return;
-  destination.appendChild(card);
+  if ('group' in data.file) {
+    const groupKey = data.file.group;
+    let group = destination.querySelector(`details.group[data-group="${CSS.escape(groupKey)}"]`);
+    if (!group) {
+      group = document.createElement('details');
+      group.className = 'group';
+      group.dataset.group = groupKey;
+      const groupTitle = data.file.group_title || (groupKey === '' ? '(no extension)' : groupKey);
+      const summary = document.createElement('summary');
+      summary.className = 'group-head';
+      summary.innerHTML = `<span class="caret" aria-hidden="true">▸</span> ${groupTitle} <span class="count">0</span>`;
+      group.appendChild(summary);
+      if (data.section && data.section.outcome === 'needs_attention' && groupKey === 'priority') {
+        group.open = true;
+      }
+      destination.appendChild(group);
+    }
+    group.appendChild(card);
+    const groupCount = group.querySelector(':scope > .group-head .count');
+    if (groupCount) groupCount.textContent = group.querySelectorAll('details.file').length;
+  } else {
+    destination.appendChild(card);
+  }
   updateSectionCount(previousSection);
   updateSectionCount(destination);
   destination.hidden = false;
