@@ -561,6 +561,10 @@ def _live_file_payload(file) -> dict:
     if group is not None:
         payload["group"] = group["key"]
         payload["group_title"] = group["title"]
+    if file_view["outcome_key"] == "needs_attention":
+        ext = file_view["extension"]
+        payload["subgroup"] = ext
+        payload["subgroup_title"] = "(no extension)" if ext == "" else f".{ext}"
     return {
         "file": payload,
         "section": section,
