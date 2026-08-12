@@ -132,3 +132,62 @@ def test_infected_and_errors_sections_have_no_groups_key():
         if section is None:
             continue
         assert "groups" not in section
+
+
+def _no_detections_result(name: str):
+    rec = _record(name)
+    cls = _classified(rec)
+    res = classify_report_result(FileResult(
+        record=rec, classification=cls,
+        lookup_status=LookupStatus.FOUND,
+    ))
+    res.outcome = ScanOutcome.NO_DETECTIONS
+    res.outcome_reason = OutcomeReason.ENGINE_CLEAN
+    res.assessment_complete = True
+    return res
+
+
+def test_no_detections_grouped_alphabetically_by_extension():
+    results = [
+        _no_detections_result("zeta.sh"),
+        _no_detections_result("alpha.exe"),
+        _no_detections_result("readme"),
+        _no_detections_result("beta.exe"),
+        _no_detections_result("gamma.dat"),
+    ]
+    report = build_scan_report(Path("/scan"), results, online=True, upload_consent=False)
+    view = build_report_view(report)
+
+    nodet = next(s for s in view["sections"] if s["outcome"] == "no_detections")
+    keys = [g["key"] for g in nodet["groups"]]
+    assert keys == ["", "dat", "exe", "sh"]
+    assert nodet["groups"][0]["title"] == "(no extension)"
+    assert nodet["groups"][1]["title"] == ".dat"
+    exe_names = {f["name"] for f in next(g for g in nodet["groups"] if g["key"] == "exe")["files"]}
+    assert exe_names == {"alpha.exe", "beta.exe"}
+    for group in nodet["groups"]:
+        assert group["hidden"] == 0
+
+
+def test_skipped_grouped_with_per_group_cap():
+    # 750 .exe files + 200 .sh files
+    results = []
+    for i in range(750):
+        results.append(_no_detections_result(f"a{i}.exe"))
+    for i in range(200):
+        results.append(_no_detections_result(f"b{i}.sh"))
+    for r in results:
+        r.outcome = ScanOutcome.SKIPPED
+        r.outcome_reason = OutcomeReason.LOW_RISK
+    report = build_scan_report(Path("/scan"), results, online=True, upload_consent=False)
+    view = build_report_view(report)
+
+    skipped = next(s for s in view["sections"] if s["outcome"] == "skipped")
+    groups = {g["key"]: g for g in skipped["groups"]}
+    assert set(groups) == {"exe", "sh"}
+    assert groups["exe"]["total"] == 750
+    assert groups["exe"]["hidden"] == 250
+    assert len(groups["exe"]["files"]) == 500
+    assert groups["sh"]["total"] == 200
+    assert groups["sh"]["hidden"] == 0
+    assert len(groups["sh"]["files"]) == 200

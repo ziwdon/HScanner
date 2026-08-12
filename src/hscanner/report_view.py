@@ -128,6 +128,24 @@ def _group_needs_attention_by_risk(files: list[dict[str, Any]]) -> list[dict[str
     return groups
 
 
+def _group_by_extension(files: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
+    by_ext: dict[str, list[dict[str, Any]]] = {}
+    for file in files:
+        by_ext.setdefault(file["extension"], []).append(file)
+    groups = []
+    for ext in sorted(by_ext):
+        group_files = by_ext[ext]
+        shown = group_files[:cap]
+        groups.append({
+            "key": ext,
+            "title": "(no extension)" if ext == "" else f".{ext}",
+            "files": shown,
+            "total": len(group_files),
+            "hidden": len(group_files) - len(shown),
+        })
+    return groups
+
+
 def build_report_view(
     report: ScanReport,
     *,
@@ -182,6 +200,8 @@ def build_report_view(
                 {"key": "priority", "label": "Priority", "pressed": False},
                 {"key": "low_risk", "label": "Lower risk", "pressed": False},
             ]
+        elif outcome in {"no_detections", "skipped"}:
+            section["groups"] = _group_by_extension(files, secondary_cap)
         sections.append(section)
 
     summary = report.summary
