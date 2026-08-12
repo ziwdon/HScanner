@@ -759,3 +759,133 @@ def test_scan_unverified_unknown_target_returns_400(tmp_path, monkeypatch):
     )
     assert r.status_code == 400, r.text
     assert "unknown target" in r.json()["error"], r.text
+
+
+# ---------------------------------------------------------------------------
+# Task 5: nested extension subgroups render inside Needs attention tier
+# groups; #scan-all gets a data-target driven by the active filter pill.
+# ---------------------------------------------------------------------------
+
+
+def _nap_task5_nested_results():
+    """Three needs-attention results: two priority-tier UPLOAD_CANDIDATE
+    files (alpha.exe, beta.sh) and one low_risk-tier HASH_ONLY file
+    (notes.txt). Returns ``(results, root)``."""
+    from hscanner.classifier import classify_file
+    from hscanner.models import (
+        ClassificationBucket,
+        FileRecord,
+        FileResult,
+        LookupStatus,
+        OutcomeReason,
+        ScanOutcome,
+    )
+    from hscanner.policy.loader import load_default_policy
+    from hscanner.report import classify_report_result
+
+    root = Path("/scan")
+
+    def _needs(name, bucket):
+        rec = FileRecord(
+            root=root,
+            path=root / name,
+            size=100,
+            mtime_ns=0,
+            mode=0o644,
+            is_symlink=False,
+            is_regular=True,
+            is_hidden=False,
+        )
+        cls = classify_file(rec, load_default_policy())
+        cls.bucket = bucket
+        res = FileResult(
+            record=rec, classification=cls, lookup_status=LookupStatus.NOT_FOUND
+        )
+        res.outcome = ScanOutcome.NEEDS_ATTENTION
+        res.outcome_reason = OutcomeReason.ENGINE_NOT_FOUND
+        return classify_report_result(res)
+
+    results = [
+        _needs("alpha.exe", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("beta.sh", ClassificationBucket.UPLOAD_CANDIDATE),
+        _needs("notes.txt", ClassificationBucket.HASH_ONLY),
+    ]
+    return results, root
+
+
+def _nap_task5_extract_group_html(body, group_key):
+    """Return the inner HTML of the outermost
+    ``<details class="group" data-group="{group_key}">`` element by counting
+    nested ``<details>`` openings and closings. Returns ``None`` when the
+    outer group is not found. Using a depth walk (instead of a naive
+    ``.*?</details>`` regex) avoids truncating at the first nested
+    subgroup's closing tag.
+    """
+    m = re.search(
+        r'<details class="group" data-group="' + re.escape(group_key) + r'"[^>]*>',
+        body,
+    )
+    if m is None:
+        return None
+    start = m.end()
+    depth = 1
+    i = start
+    while i < len(body):
+        next_open = body.find("<details", i)
+        next_close = body.find("</details>", i)
+        if next_close == -1:
+            return None
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            i = next_open + len("<details")
+        else:
+            depth -= 1
+            if depth == 0:
+                return body[start:next_close]
+            i = next_close + len("</details>")
+    return None
+
+
+def test_needs_attention_renders_nested_extension_subgroups(tmp_path):
+    results, root = _nap_task5_nested_results()
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "nap-task5-nested-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+    body = TestClient(app).get("/reports/nap-task5-nested-report").text
+
+    priority_html = _nap_task5_extract_group_html(body, "priority")
+    assert priority_html is not None, "priority tier group not found"
+    assert '<details class="group subgroup" data-subgroup="exe"' in priority_html
+    assert '<details class="group subgroup" data-subgroup="sh"' in priority_html
+
+    low_html = _nap_task5_extract_group_html(body, "low_risk")
+    assert low_html is not None, "low_risk tier group not found"
+    assert '<details class="group subgroup" data-subgroup="txt"' in low_html
+
+
+def test_scan_all_button_has_data_target_default_all(tmp_path):
+    results, root = _nap_task5_nested_results()
+    report = build_scan_report(
+        root,
+        results,
+        online=True,
+        upload_consent=False,
+        report_id_factory=lambda: "nap-task5-button-report",
+    )
+    app = create_app(report_registry=ReportRegistry())
+    app.state.report_registry.put(report)
+    body = TestClient(app).get("/reports/nap-task5-button-report").text
+
+    m = re.search(r'<button[^>]*id="scan-all"[^>]*>', body)
+    assert m is not None, "#scan-all button not found"
+    button_open = m.group(0)
+    assert 'data-target="all"' in button_open
+    close = body.find("</button>", m.end())
+    assert close != -1
+    assert "Upload and scan all unverified" in body
