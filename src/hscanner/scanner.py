@@ -33,7 +33,7 @@ from hscanner.models import (
     ScanOutcome,
     ScanStatus,
     UploadStatus,
-    risk_tier_for,
+    risk_tier_for_classification,
 )
 from hscanner.policy.loader import load_default_policy
 from hscanner.progress import (
@@ -48,6 +48,13 @@ from hscanner.progress import (
 from hscanner.report import classify_report_result
 from hscanner.state import ScanState
 from hscanner.store import open_global_store
+
+_TIER_ORDER = {
+    RiskTier.HIGH: 0,
+    RiskTier.MEDIUM: 1,
+    RiskTier.LOW_RISK: 2,
+    RiskTier.SKIPPED: 3,
+}
 
 
 @dataclass
@@ -339,7 +346,7 @@ async def run_online_scan(
     results = run_local_scan(root, scan_state=scan_state, include_subfolders=include_subfolders)
     results.sort(
         key=lambda r: (
-            0 if risk_tier_for(r.classification.bucket) == RiskTier.PRIORITY else 1,
+            _TIER_ORDER[risk_tier_for_classification(r.classification)],
             r.record.relative_path,
         )
     )
@@ -347,13 +354,13 @@ async def run_online_scan(
         1 for r in results
         if r.sha256 and (
             not bypass_low_risk
-            or risk_tier_for(r.classification.bucket) != RiskTier.LOW_RISK
+            or risk_tier_for_classification(r.classification) != RiskTier.LOW_RISK
         )
     )
     bypassed = sum(
         1 for r in results
         if r.sha256 and bypass_low_risk
-        and risk_tier_for(r.classification.bucket) == RiskTier.LOW_RISK
+        and risk_tier_for_classification(r.classification) == RiskTier.LOW_RISK
     )
     _emit(observer, ScanProgressEvent(
         type=EventType.SCAN_STARTED, total=len(results),
@@ -378,7 +385,7 @@ async def run_online_scan(
                     continue
                 if (
                     bypass_low_risk
-                    and risk_tier_for(result.classification.bucket) == RiskTier.LOW_RISK
+                    and risk_tier_for_classification(result.classification) == RiskTier.LOW_RISK
                 ):
                     result.outcome = ScanOutcome.SKIPPED
                     result.outcome_reason = OutcomeReason.LOW_RISK
@@ -539,7 +546,7 @@ def finalize_unchecked_results(
         ):
             if (
                 bypass_low_risk
-                and risk_tier_for(result.classification.bucket) == RiskTier.LOW_RISK
+                and risk_tier_for_classification(result.classification) == RiskTier.LOW_RISK
             ):
                 result.outcome = ScanOutcome.SKIPPED
                 result.outcome_reason = OutcomeReason.LOW_RISK
@@ -594,7 +601,7 @@ async def scan_single_file(
     prefix = read_magic(record.path)
     signals = file_signals(prefix, record.mode)
     classification = reclassify_with_signals(record, classification, prefix, policy)
-    if risk_tier_for(classification.bucket) != RiskTier.PRIORITY:
+    if risk_tier_for_classification(classification) not in {RiskTier.HIGH, RiskTier.MEDIUM}:
         raise SingleFileNotEligible("not_priority")
     if not classification.upload_eligible:
         raise SingleFileNotEligible("too_large")
@@ -669,7 +676,7 @@ async def scan_single_file_with_rotation(
     prefix = read_magic(record.path)
     signals = file_signals(prefix, record.mode)
     classification = reclassify_with_signals(record, classification, prefix, policy)
-    if risk_tier_for(classification.bucket) != RiskTier.PRIORITY:
+    if risk_tier_for_classification(classification) not in {RiskTier.HIGH, RiskTier.MEDIUM}:
         raise SingleFileNotEligible("not_priority")
     if not classification.upload_eligible:
         raise SingleFileNotEligible("too_large")
