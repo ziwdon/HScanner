@@ -7,6 +7,54 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Report page improvements — IMPLEMENTED (2026-08-17, PR #9).**
+>
+> Five report-page fixes shipped to `main`:
+> 1. **Priority tier split (HIGH / MEDIUM / LOW_RISK):** replaced the single `PRIORITY` tier
+>    with `HIGH` (OS-shell-runnable / native code: `.exe`/`.dll`/`.so`/`.sh`/`.bat`/…) and
+>    `MEDIUM` (runtime/interpreter required: `.py`/`.js`/`.jar`/…). `LOW_RISK` =
+>    data/config/markup/docs/media. Fixed the classifier's catch-all fallback to honor
+>    `matching.default_bucket: hash_only` — `.json`/`.xml`/`.csv`/`.html` etc. no longer
+>    land under Priority. Curated `upload_candidate.high_extensions` /
+>    `medium_extensions` sub-lists (no currently-listed extension changed tier). Extended
+>    `hash_only.extensions` with data/config/markup types. HIGH files are scanned before
+>    MEDIUM inside the priority set. Three pills in Needs-attention: High / Medium / Lower
+>    risk (auto-opens High). Batch endpoint accepts `high`/`medium`/`priority` (legacy
+>    alias = high ∪ medium)/`low_risk`/`all` targets. Persisted reports that predate the
+>    split render via `risk_tier_for_legacy_bucket` (worst-case → HIGH) until re-scanned.
+>    `ReportFile.risk_tier` is a new additive field (serialized in JSON/CSV; restored with
+>    legacy fallback on load).
+> 2. **Live count updates after per-file scan:** new `updateGroupCounts(section)` JS helper
+>    recomputes group, subgroup, and risk-chip counts from the live DOM after each per-file
+>    scan. Empty groups/subgroups hide. Page-top summary tiles update via
+>    `updateSummaryTiles` on the terminal `done` event. Backend: `_file_terminal_payload`
+>    now includes a `summary` dict (same shape as the batch path). Same live updates apply
+>    during batch progress (the final reload stays as a backstop).
+> 3. **Frontend per-file scan queue:** clicking "Scan this file" on multiple files queues
+>    them in the frontend instead of immediately POSTing each (which produced 409s).
+>    Progress card shows "Per-file upload queue (N of M)". Files process one at a time,
+>    matching the backend's existing serialization. Cancel clears the remaining queue.
+> 4. **Scanned count includes uploaded files:** `compute_summary` now defines `scanned`
+>    as files with a definitive engine verdict (`INFECTED`/`NO_DETECTIONS`) **or**
+>    `ANALYSIS_COMPLETE` upload status. Files whose hash was checked but not found
+>    (`needs_attention`, no upload) are no longer counted as scanned.
+> 5. **Per-file scan progress survives page refresh:** new
+>    `GET /reports/{id}/files/scan/active` endpoint returns active per-file scan jobs.
+>    `FileScanManager.active_jobs_for_report` helper. Frontend `reconnectPerFileScans()`
+>    on page load discovers any running per-file scan and reconnects to its SSE stream.
+>
+> **Bugfix (2026-08-17, post-merge):** `.ini` / `.gds` and other known `hash_only`
+> extensions with a stray executable bit were incorrectly promoted to HIGH priority.
+> The `executable_bit` rule now only applies to truly unknown extensions, after the
+> `hash_only` extension check. Known data/config files (`.ini`, `.json`, `.css`, `.html`,
+> etc.) stay `LOW_RISK` even with mode `0755`. Real executable content is still caught by
+> ELF/shebang magic detection during the hashing pass (`reclassify_with_signals`).
+>
+> **Verification:** 564 passing tests; Ruff clean; `git diff --check` clean.
+> **Note:** `docs/` is gitignored (local planning state). Specs and plans for this session
+> exist locally under `docs/superpowers/{specs,plans}/2026-08-17-*` but are NOT in git.
+> PR #9 was reviewed post-merge to confirm no gitignored files were tracked — clean.
+
 > **Bugfix: MetaDefender per-AV `scan_result_i` codes ≥ 3 are NOT detections — FIXED (2026-08-12).**
 >
 > **Symptom:** a file with `0/30` detections and `scan_all_result_a == "No Threat Detected"`
@@ -232,8 +280,8 @@ final whole-branch review.
   longer uploads during folder scans (upload consent is now per-file). Files not found by hash
   remain Unknown/Not-uploaded until the user acts.
 - **ELF/shebang promotion:** `file_signals` reads magic bytes + mode; `reclassify_with_signals`
-  promotes files to PRIORITY when ELF or shebang is detected, even if the extension-based bucket
-  was lower-risk.
+  promotes files to `UPLOAD_CANDIDATE` / `HIGH` when ELF or shebang is detected, even if the
+  extension-based bucket was lower-risk.
 - **On-demand per-file upload:** `scan_single_file(root, relative_path, engine, cache)` in
   `src/hscanner/scanner.py` — raises `SingleFileNotEligible(reason)` for sensitive/non-priority/
   too-large files before any engine call. `FileScanManager` (`src/hscanner/web/jobs.py`) runs
@@ -346,8 +394,10 @@ spec change and the user's sign-off:
 - **Engine API keys are never persisted to** scan state, reports, exports, logs, browser
   storage, or the default config. Keyring/secret-service when available; session-only otherwise.
 - **Classification is deterministic** — a fixed precedence pipeline, driven by structured policy
-  data, never scattered hardcoded conditionals. Unmatched regular files fall back to upload
-  candidates so their hashes are checked online and per-file upload can be offered if not found.
+  data, never scattered hardcoded conditionals. Unmatched regular files fall back per
+  `matching.default_bucket` (default `hash_only`, so unrecognized data files are hashed and
+  checked online but not offered for upload; set to `upload_candidate` to restore the old
+  fall-back-to-upload behavior).
 - **Size limits gate upload eligibility** (`large_upload_soft_block_mb`, `absolute_upload_block_mb`).
   Per-bucket rules may tighten global limits but never loosen them.
 - **The web server binds to `127.0.0.1` by default.** No hosted backend in the MVP.
