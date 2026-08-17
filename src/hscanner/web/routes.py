@@ -542,6 +542,7 @@ def _file_terminal_payload(request: Request, report_id: str, index: int, job) ->
         "flagged": f.detection_ratio.flagged,
         "total_engines": f.detection_ratio.total,
         "permalink": f.permalink,
+        "summary": _summary_payload(report),
         **_live_file_payload(f),
     }
 

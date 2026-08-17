@@ -244,6 +244,15 @@ def test_file_scan_done_event_includes_live_row_payload(tmp_path, monkeypatch):
     assert terminal["file"]["outcome"] == "no_detections"
     assert 'data-index="0"' in terminal["file_card_html"]
     assert "No detections" in terminal["file_card_html"]
+    # The terminal payload includes a summary dict so the frontend can
+    # update page-top tiles live after a per-file scan (no reload needed).
+    assert "summary" in terminal, terminal
+    summary = terminal["summary"]
+    for key in ("inventoried", "scanned", "infected", "needs_attention",
+                "uploaded", "skipped", "errors"):
+        assert key in summary, (key, summary)
+    assert summary["scanned"] >= 1, summary
+    assert summary["inventoried"] >= 1, summary
 
 
 def test_group_for_file_view_covers_all_outcomes():
