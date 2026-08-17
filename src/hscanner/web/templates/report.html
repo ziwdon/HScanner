@@ -220,6 +220,29 @@ function updateSectionCount(section) {
   });
 }
 
+function updateGroupCounts(section) {
+  if (!section) return;
+  section.querySelectorAll(':scope > details.group').forEach((group) => {
+    const groupFiles = group.querySelectorAll('details.file').length;
+    const groupCount = group.querySelector(':scope > .group-head .count');
+    if (groupCount) groupCount.textContent = groupFiles;
+    group.querySelectorAll(':scope > details.group.subgroup').forEach((subgroup) => {
+      const subgroupFiles = subgroup.querySelectorAll('details.file').length;
+      const subgroupCount = subgroup.querySelector(':scope > .group-head .count');
+      if (subgroupCount) subgroupCount.textContent = subgroupFiles;
+      subgroup.hidden = subgroupFiles === 0;
+    });
+    group.hidden = groupFiles === 0;
+  });
+  section.querySelectorAll('.risk-chip').forEach((chip) => {
+    const key = chip.dataset.filter;
+    const group = section.querySelector(`:scope > details.group[data-group="${CSS.escape(key)}"]`);
+    const count = group ? group.querySelectorAll('details.file').length : 0;
+    const countEl = chip.querySelector('b');
+    if (countEl) countEl.textContent = count;
+  });
+}
+
 function ensureSection(sectionData) {
   const meta = sectionData || sectionMeta('needs_attention');
   let section = document.getElementById(meta.id);
@@ -324,6 +347,8 @@ function applyFileUpdate(data) {
 
   updateSectionCount(previousSection);
   updateSectionCount(destination);
+  updateGroupCounts(previousSection);
+  updateGroupCounts(destination);
   destination.hidden = false;
   const navLink = document.querySelector(`.report-nav a[href="#${destination.id}"]`);
   if (navLink) navLink.hidden = false;
