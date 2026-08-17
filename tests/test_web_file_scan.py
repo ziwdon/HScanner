@@ -507,7 +507,26 @@ def test_unknown_report_id_returns_404(tmp_path, monkeypatch):
 
     _, client = _make_app_and_client()
     resp = client.post("/reports/no-such-report/files/0/scan")
-    assert resp.status_code == 404, resp.text
+    assert resp.status_code == 404
+
+
+def test_active_file_scans_endpoint_returns_404_for_unknown_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _, client = _make_app_and_client()
+    resp = client.get("/reports/no-such-report/files/scan/active")
+    assert resp.status_code == 404
+
+
+def test_active_file_scans_endpoint_returns_inactive_when_no_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client(vt_factory=lambda eid, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    resp = client.get(f"/reports/{report.report_id}/files/scan/active")
+    assert resp.status_code == 200
+    assert resp.json()["active"] is False
 
 
 def test_file_scan_index_boundaries_return_clean_404(tmp_path, monkeypatch):

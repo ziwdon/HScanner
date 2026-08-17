@@ -699,6 +699,26 @@ def scan_report_file_events(request: Request, report_id: str, index: int) -> Res
     )
 
 
+@router.get("/reports/{report_id}/files/scan/active")
+def active_file_scans(request: Request, report_id: str) -> Response:
+    """Return active per-file scan jobs for this report so the frontend
+    can reconnect after a page refresh."""
+    report = request.app.state.report_registry.get(report_id)
+    if report is None:
+        return JSONResponse({"error": "report expired or unavailable"}, status_code=404)
+    manager = request.app.state.file_scan_manager
+    jobs = manager.active_jobs_for_report(report_id)
+    if not jobs:
+        return JSONResponse({"active": False})
+    return JSONResponse({
+        "active": True,
+        "jobs": [
+            {"job_id": job.id, "index": job.index, "state": job.state}
+            for job in jobs
+        ],
+    })
+
+
 @router.post("/reports/{report_id}/scan-unverified")
 async def scan_unverified(request: Request, report_id: str) -> Response:
     """Start or return the active server-side batch for upload-eligible attention files."""

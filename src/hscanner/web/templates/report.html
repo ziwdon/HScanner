@@ -645,6 +645,51 @@ cancelUpload.addEventListener('click', async () => {
     setUploadProgress(lastBatchDone, lastBatchTotal, 'Connection failed while requesting cancellation');
   }
 });
+
+async function reconnectPerFileScans() {
+  let response;
+  try {
+    response = await fetch(`/reports/${REPORT_ID}/files/scan/active`);
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const body = await responseJson(response);
+  if (!body.active || !body.jobs) return;
+  body.jobs.forEach((job) => {
+    const path = filePath(String(job.index)) || `file ${job.index}`;
+    const statusEl = document.querySelector(`.scan-status[data-index="${job.index}"]`);
+    perFileQueueTotal = 1;
+    perFileQueueDone = 0;
+    setUploadProgress(0, 1, `${path} · ${job.state || 'running'}`, 'Per-file upload queue (1 of 1)');
+    const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.state === 'done') {
+        applyFileUpdate(data);
+        updateSummaryTiles(data.summary);
+        setUploadProgress(1, 1, `${path} · completed`, 'Per-file upload queue (1 of 1)');
+        perFileQueueTotal = 0;
+        perFileQueueDone = 0;
+        es.close();
+      } else if (data.state === 'error') {
+        setUploadProgress(0, 1, `${path} · ${data.error || 'Scan failed'}`, 'Per-file upload queue (1 of 1)');
+        perFileQueueTotal = 0;
+        perFileQueueDone = 0;
+        es.close();
+      } else {
+        setUploadProgress(0, 1, `${path} · ${data.state}`, 'Per-file upload queue (1 of 1)');
+      }
+    };
+    es.onerror = () => {
+      perFileQueueTotal = 0;
+      perFileQueueDone = 0;
+      es.close();
+    };
+  });
+}
+
 reconnectActiveBatch();
+reconnectPerFileScans();
 </script>
 {% endblock %}
