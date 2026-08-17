@@ -25,7 +25,10 @@ def risk_tier_for_classification(cls: "Classification") -> RiskTier:
 
 
 def risk_tier_for_legacy_bucket(bucket: "ClassificationBucket") -> RiskTier:
-    if bucket in {ClassificationBucket.UPLOAD_CANDIDATE, ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED}:
+    if bucket in {
+        ClassificationBucket.UPLOAD_CANDIDATE,
+        ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
+    }:
         return RiskTier.HIGH
     if bucket == ClassificationBucket.SKIPPED:
         return RiskTier.SKIPPED

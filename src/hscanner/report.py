@@ -17,7 +17,6 @@ from hscanner.models import (
     ReportAction,
     ReportCategory,
     RiskLabel,
-    RiskTier,
     ScanOutcome,
     ScanStatus,
     UploadStatus,

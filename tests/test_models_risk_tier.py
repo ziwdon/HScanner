@@ -1,9 +1,11 @@
 from hscanner.models import (
     Classification,
-    ClassificationBucket as B,
     RiskTier,
     risk_tier_for_classification,
     risk_tier_for_legacy_bucket,
+)
+from hscanner.models import (
+    ClassificationBucket as B,
 )
 
 

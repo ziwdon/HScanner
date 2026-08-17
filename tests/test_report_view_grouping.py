@@ -9,7 +9,6 @@ from hscanner.models import (
     FileResult,
     LookupStatus,
     OutcomeReason,
-    RiskTier,
     ScanOutcome,
     risk_tier_for_legacy_bucket,
 )

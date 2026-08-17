@@ -252,21 +252,39 @@ def test_group_for_file_view_covers_all_outcomes():
     flat (ungrouped) sections (infected, error)."""
     from hscanner.report_view import group_for_file_view
 
-    def _f(outcome, bucket, ext):
-        return {"outcome_key": outcome, "classification_bucket": bucket, "extension": ext}
+    def _f(outcome, bucket, ext, risk_tier=""):
+        return {
+            "outcome_key": outcome,
+            "classification_bucket": bucket,
+            "extension": ext,
+            "risk_tier": risk_tier,
+        }
 
+    # Without risk_tier (legacy persisted report), grouping falls back to
+    # the legacy bucket mapping: upload_candidate/suspicious → high,
+    # hash_only → low_risk.
     assert group_for_file_view(_f("needs_attention", "upload_candidate", "sh")) == {
-        "key": "priority",
-        "title": "Priority",
+        "key": "high",
+        "title": "High priority",
     }
     assert group_for_file_view(_f("needs_attention", "suspicious_upload_blocked", "pak")) == {
-        "key": "priority",
-        "title": "Priority",
+        "key": "high",
+        "title": "High priority",
     }
     assert group_for_file_view(_f("needs_attention", "hash_only", "pdf")) == {
         "key": "low_risk",
         "title": "Lower risk",
     }
+    # With an explicit risk_tier, the tier drives grouping directly.
+    assert group_for_file_view(
+        _f("needs_attention", "upload_candidate", "py", risk_tier="medium")
+    ) == {"key": "medium", "title": "Medium priority"}
+    assert group_for_file_view(
+        _f("needs_attention", "upload_candidate", "sh", risk_tier="high")
+    ) == {"key": "high", "title": "High priority"}
+    assert group_for_file_view(
+        _f("needs_attention", "hash_only", "pdf", risk_tier="low_risk")
+    ) == {"key": "low_risk", "title": "Lower risk"}
     assert group_for_file_view(_f("no_detections", "upload_candidate", "exe")) == {
         "key": "exe",
         "title": ".exe",
@@ -292,13 +310,12 @@ def test_group_for_file_view_covers_all_outcomes():
     [
         ("tool.sh", "#!/bin/sh\necho hello\n", lambda: _FoundClient(), "no_detections", "sh"),
         ("tool.exe", "MZ\x90\x00binary", lambda: _FoundClient(), "no_detections", "exe"),
-        ("Makefile", "all:\n\techo hi\n", lambda: _FoundClient(), "no_detections", ""),
         (
             "tool.sh",
             "#!/bin/sh\necho hello\n",
             lambda: _IncompleteNotFoundClient(),
             "needs_attention",
-            "priority",
+            "high",
         ),
         (
             "tool.sh",
@@ -314,7 +331,13 @@ def test_file_scan_done_event_includes_group_field(
 ):
     """The terminal SSE ``done`` payload carries a ``file.group`` field matching
     the grouped report DOM for grouped outcomes, and omits it for flat outcomes
-    (infected). Drives the real per-file scan path with an injected engine."""
+    (infected). Drives the real per-file scan path with an injected engine.
+
+    Note: the extensionless-file case (no extension → empty group key) is no
+    longer reachable through this HTTP path after the classifier default-bucket
+    fallback fix (an extensionless non-executable file is now HASH_ONLY and
+    per-file scan is rejected with not_priority). That contract is covered
+    directly by ``test_group_for_file_view_covers_all_outcomes``."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("HS_API_KEY_VIRUSTOTAL", raising=False)
 
@@ -399,7 +422,8 @@ def test_file_scan_done_event_subgroup_field_for_needs_attention(
 
     if expected_outcome == "needs_attention":
         assert expect_subgroup is True
-        assert file_payload["group"] == "priority", terminal
+        # tool.sh is a HIGH-tier extension.
+        assert file_payload["group"] == "high", terminal
         assert file_payload.get("group_title"), terminal
         assert file_payload["subgroup"] == "exe", terminal
         assert file_payload["subgroup_title"] == ".exe", terminal

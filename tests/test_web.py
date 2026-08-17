@@ -504,12 +504,13 @@ def test_report_view_renders_needs_attention_groups_and_filters(tmp_path):
 
     response = TestClient(app).get("/reports/nap-task4-report")
     body = response.text
-    assert '<details class="group" data-group="priority"' in body
+    assert '<details class="group" data-group="high"' in body
     assert '<details class="group" data-group="low_risk"' in body
     assert 'class="risk-chips"' in body
     assert 'class="filter-pills"' in body
     assert 'data-filter="all"' in body
-    assert 'data-filter="priority"' in body
+    assert 'data-filter="high"' in body
+    assert 'data-filter="medium"' in body
     assert 'data-filter="low_risk"' in body
 
 
@@ -859,8 +860,8 @@ def test_needs_attention_renders_nested_extension_subgroups(tmp_path):
     app.state.report_registry.put(report)
     body = TestClient(app).get("/reports/nap-task5-nested-report").text
 
-    priority_html = _nap_task5_extract_group_html(body, "priority")
-    assert priority_html is not None, "priority tier group not found"
+    priority_html = _nap_task5_extract_group_html(body, "high")
+    assert priority_html is not None, "high tier group not found"
     assert '<details class="group subgroup" data-subgroup="exe"' in priority_html
     assert '<details class="group subgroup" data-subgroup="sh"' in priority_html
 

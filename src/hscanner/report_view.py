@@ -143,10 +143,17 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     outcome = file_view["outcome_key"]
     if outcome == "needs_attention":
         tier_str = file_view.get("risk_tier") or ""
-        if not tier_str:
-            tier = risk_tier_for_legacy_bucket(ClassificationBucket(file_view["classification_bucket"]))
-            tier_str = tier.value
         meta = _RISK_GROUP_META.get(tier_str)
+        if meta is None:
+            # Either the field is absent (legacy persisted report), or it
+            # carries a tier that does not map to a Needs-attention group
+            # (e.g. "skipped" forced in by a test fixture). Fall back to
+            # the legacy bucket mapping so the file always lands in one
+            # of the three Needs-attention groups rather than dropping.
+            tier = risk_tier_for_legacy_bucket(
+                ClassificationBucket(file_view["classification_bucket"])
+            )
+            meta = _RISK_GROUP_META.get(tier.value)
         if meta is None:
             return None
         return {"key": meta["key"], "title": meta["title"]}

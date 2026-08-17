@@ -98,7 +98,7 @@ only extended, never reclassified:
 upload_candidate:
   high_extensions:
     # OS-shell-runnable / native code launchers
-    [".exe", ".dll", ".so", ".bin", ".appimage", ".deb", ".rpm", ".msi",
+    [".exe", ".dll", ".so", ".bin", ".appimage", ".deb", ".rpm", ".msi", ".run",
      ".scr", ".com", ".lnk",
      ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1", ".vbs", ".wsf"]
   medium_extensions:

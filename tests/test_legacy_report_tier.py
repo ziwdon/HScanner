@@ -1,12 +1,12 @@
 from pathlib import Path
 
 from hscanner.classifier import classify_file
-from hscanner.models import FileRecord, FileResult, ReportAction, RiskTier
+from hscanner.models import FileRecord, FileResult, ReportAction
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import (
     _report_file,
-    _report_file_payload,
     _report_file_from_payload,
+    _report_file_payload,
 )
 
 

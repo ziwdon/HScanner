@@ -2,7 +2,13 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
-from hscanner.models import Classification, ClassificationBucket, FileRecord, OutcomeReason, RiskTier
+from hscanner.models import (
+    Classification,
+    ClassificationBucket,
+    FileRecord,
+    OutcomeReason,
+    RiskTier,
+)
 
 _ELF_MAGIC = b"\x7fELF"
 _SHEBANG = b"#!"
