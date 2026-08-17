@@ -52,7 +52,12 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
 
     soft_limit = policy["size_limits"]["large_upload_soft_block_mb"] * 1024 * 1024
     absolute_limit = policy["size_limits"]["absolute_upload_block_mb"] * 1024 * 1024
-    matched, tier_key = _is_upload_like(record, ext, buckets["upload_candidate"])
+
+    # Check upload_candidate by EXTENSION only (not executable_bit) first.
+    # The executable_bit fallback is applied later, after hash_only, so that
+    # known data/config files (e.g. .ini, .json) with a stray exec bit are
+    # NOT promoted to HIGH — only truly unknown extensions are.
+    matched, tier_key = _is_upload_like_ext(record, ext, buckets["upload_candidate"])
     upload_like_tier = _tier_from_key(tier_key) if matched else None
 
     if record.size > absolute_limit and matched:
@@ -83,6 +88,9 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             risk_tier=upload_like_tier or RiskTier.HIGH,
         )
 
+    # Known data/config/markup/docs/media files stay LOW_RISK even if they
+    # have a stray executable bit. ELF/shebang promotion via
+    # reclassify_with_signals handles real executable content later.
     if ext in _normalized_extensions(buckets["hash_only"].get("extensions", [])):
         return Classification(
             bucket=ClassificationBucket.HASH_ONLY,
@@ -90,6 +98,17 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             upload_eligible=False,
             hash_eligible=True,
             risk_tier=RiskTier.LOW_RISK,
+        )
+
+    # Executable bit on a truly unknown extension → HIGH (worst-case).
+    if _has_executable_bit(record, buckets["upload_candidate"]):
+        return Classification(
+            bucket=ClassificationBucket.UPLOAD_CANDIDATE,
+            reason=buckets["upload_candidate"]["reason"],
+            upload_eligible=True,
+            hash_eligible=True,
+            suspicious=True,
+            risk_tier=RiskTier.HIGH,
         )
 
     if record.size > soft_limit or record.size > absolute_limit:
@@ -148,19 +167,24 @@ def _matches_rule(basename: str, ext: str, rule: dict[str, Any]) -> bool:
     )
 
 
-def _is_upload_like(
+def _is_upload_like_ext(
     record: FileRecord, ext: str, rule: dict[str, Any]
 ) -> tuple[bool, str | None]:
+    """Check upload_candidate by EXTENSION only (high/medium), NOT by
+    executable_bit. The executable_bit fallback is handled separately by
+    ``_has_executable_bit`` so that known hash_only extensions with a
+    stray exec bit are not promoted."""
     high = _normalized_extensions(rule.get("high_extensions", []))
     medium = _normalized_extensions(rule.get("medium_extensions", []))
     if ext in high:
         return True, "high"
     if ext in medium:
         return True, "medium"
-    executable_bits = 0o111
-    if rule.get("executable_bit") and (record.mode & executable_bits):
-        return True, "high"
     return False, None
+
+
+def _has_executable_bit(record: FileRecord, rule: dict[str, Any]) -> bool:
+    return bool(rule.get("executable_bit")) and bool(record.mode & 0o111)
 
 
 def _matches_suspicious_block(

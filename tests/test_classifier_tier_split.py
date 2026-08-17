@@ -85,3 +85,25 @@ def test_oversized_medium_extension_is_medium_suspicious_blocked():
     assert c.risk_tier == RiskTier.MEDIUM
     assert c.upload_eligible is False
     assert c.hash_eligible is True
+
+def test_hash_only_extension_with_exec_bit_stays_low_risk():
+    """A known hash_only extension (e.g. .ini) with the executable bit set
+    should NOT be promoted to HIGH by the executable_bit rule. Known
+    data/config files stay LOW_RISK; ELF/shebang promotion via
+    reclassify_with_signals handles real executable content later."""
+    policy = load_default_policy()
+    for name in ("config.ini", "data.json", "style.css", "page.html"):
+        c = classify_file(_record(name, mode=0o100755), policy)
+        assert c.bucket == ClassificationBucket.HASH_ONLY, name
+        assert c.risk_tier == RiskTier.LOW_RISK, name
+        assert c.upload_eligible is False, name
+
+
+def test_unknown_extension_with_exec_bit_is_still_high():
+    """A truly unknown extension with the executable bit should still
+    promote to HIGH — the executable_bit rule is a fallback for files
+    we have no other classification for."""
+    policy = load_default_policy()
+    c = classify_file(_record("weird.xyz", mode=0o100755), policy)
+    assert c.bucket == ClassificationBucket.UPLOAD_CANDIDATE
+    assert c.risk_tier == RiskTier.HIGH
