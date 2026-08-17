@@ -455,6 +455,7 @@ async function scanFile(index, statusEl, hooks = {}) {
         if (data.state === 'done') {
           if (statusEl) statusEl.textContent = 'done - ' + (data.outcome || '').replace('_', ' ');
           applyFileUpdate(data);
+          updateSummaryTiles(data.summary);
           es.close(); resolve('done');
         } else if (data.state === 'error') {
           const reason = data.error || 'Scan failed';
