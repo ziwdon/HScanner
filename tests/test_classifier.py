@@ -75,13 +75,16 @@ def test_non_regular_file_has_unsupported_skip_reason() -> None:
     assert result.skip_reason == OutcomeReason.UNSUPPORTED_FILE
 
 
-def test_unknown_extension_falls_back_to_upload_candidate() -> None:
+def test_unknown_extension_falls_back_to_hash_only() -> None:
+    """Per the spec, unmatched regular files fall back to
+    matching.default_bucket (default hash_only), so .xyz and other
+    unrecognized types are LOW_RISK rather than Promoted to Priority."""
     result = classify_file(record("sample.xyz"), load_default_policy())
 
-    assert result.bucket == ClassificationBucket.UPLOAD_CANDIDATE
-    assert result.upload_eligible is True
+    assert result.bucket == ClassificationBucket.HASH_ONLY
+    assert result.upload_eligible is False
     assert result.hash_eligible is True
-    assert result.suspicious is True
+    assert result.suspicious is False
 
 
 def test_large_unknown_extension_is_upload_blocked() -> None:
