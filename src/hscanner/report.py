@@ -300,7 +300,11 @@ def _report_file_payload(file: ReportFile) -> dict[str, Any]:
 def compute_summary(files: tuple[ReportFile, ...], metrics: RequestMetrics) -> ReportSummary:
     return ReportSummary(
         inventoried=len(files),
-        scanned=sum(file.engine_checked for file in files),
+        scanned=sum(
+            file.outcome in {ScanOutcome.INFECTED.value, ScanOutcome.NO_DETECTIONS.value}
+            or file.upload_status == UploadStatus.ANALYSIS_COMPLETE.value
+            for file in files
+        ),
         infected=sum(file.outcome == ScanOutcome.INFECTED.value for file in files),
         needs_attention=sum(
             file.outcome == ScanOutcome.NEEDS_ATTENTION.value for file in files
