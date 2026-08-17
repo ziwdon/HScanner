@@ -180,7 +180,7 @@ def test_base_template_does_not_fetch_external_fonts() -> None:
     assert response.status_code == 200
     assert "fonts.googleapis.com" not in response.text
     assert "fonts.gstatic.com" not in response.text
-    assert "/static/app.css?v=10" in response.text
+    assert "/static/app.css?v=11" in response.text
 
 
 def test_export_menu_stacks_above_report_content_below_topbar() -> None:
@@ -589,7 +589,7 @@ def test_base_html_references_latest_app_css_cache_buster() -> None:
         / "base.html"
     )
     text = base.read_text(encoding="utf-8")
-    assert "app.css?v=10" in text
+    assert "app.css?v=11" in text
 
 
 # ---------------------------------------------------------------------------

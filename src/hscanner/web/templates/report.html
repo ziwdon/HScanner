@@ -82,7 +82,7 @@
       {% endif %}
       {% if section.groups %}
       {% for group in section.groups %}
-      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'priority' %} open{% endif %}>
+      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'high' %} open{% endif %}>
         <summary class="group-head"><span class="caret" aria-hidden="true">▸</span> {{ group.title }} <span class="count">{{ group.total }}</span></summary>
         {% if group.subgroups %}
         {% for subgroup in group.subgroups %}
@@ -147,8 +147,10 @@ document.querySelectorAll('.filter-pills').forEach((pills) => {
       scanAllBtn.dataset.target = key;
       scanAllBtn.textContent = key === 'all'
         ? 'Upload and scan all unverified'
-        : key === 'priority'
-        ? 'Upload and scan all priority'
+        : key === 'high'
+        ? 'Upload and scan all high priority'
+        : key === 'medium'
+        ? 'Upload and scan all medium priority'
         : 'Upload and scan all lower risk';
     }
   });
