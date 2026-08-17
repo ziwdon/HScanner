@@ -10,6 +10,7 @@ from hscanner.models import (
     LookupStatus,
     OutcomeReason,
     ScanOutcome,
+    risk_tier_for_legacy_bucket,
 )
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import build_scan_report, classify_report_result
@@ -63,6 +64,10 @@ def _needs_attention_result(name: str, bucket: ClassificationBucket):
     rec = _record(name)
     cls = _classified(rec)
     cls.bucket = bucket
+    # The test fixture overrides only the bucket; align risk_tier with the
+    # bucket via the legacy mapping so the report-view grouping is
+    # deterministic. (Production code sets risk_tier in classify_file.)
+    cls.risk_tier = risk_tier_for_legacy_bucket(bucket)
     res = classify_report_result(FileResult(
         record=rec, classification=cls,
         lookup_status=LookupStatus.NOT_FOUND,
@@ -72,7 +77,7 @@ def _needs_attention_result(name: str, bucket: ClassificationBucket):
     return res
 
 
-def test_needs_attention_section_has_priority_and_low_risk_groups():
+def test_needs_attention_section_has_high_medium_low_risk_groups():
     results = [
         _needs_attention_result("tool.exe", ClassificationBucket.UPLOAD_CANDIDATE),
         _needs_attention_result("notes.txt", ClassificationBucket.HASH_ONLY),
@@ -83,13 +88,16 @@ def test_needs_attention_section_has_priority_and_low_risk_groups():
     view = build_report_view(report)
 
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
-    assert [g["key"] for g in needs["groups"]] == ["priority", "low_risk"]
-    priority_names = {f["name"] for f in needs["groups"][0]["files"]}
-    low_names = {f["name"] for f in needs["groups"][1]["files"]}
-    assert priority_names == {"tool.exe", "big.exe"}
+    assert [g["key"] for g in needs["groups"]] == ["high", "medium", "low_risk"]
+    high_names = {f["name"] for f in needs["groups"][0]["files"]}
+    medium_names = {f["name"] for f in needs["groups"][1]["files"]}
+    low_names = {f["name"] for f in needs["groups"][2]["files"]}
+    assert high_names == {"tool.exe", "big.exe"}
+    assert medium_names == set()
     assert low_names == {"notes.txt", "misc.dat"}
     assert needs["groups"][0]["total"] == 2
-    assert needs["groups"][1]["total"] == 2
+    assert needs["groups"][1]["total"] == 0
+    assert needs["groups"][2]["total"] == 2
     for group in needs["groups"]:
         assert group["hidden"] == 0
 
@@ -105,12 +113,15 @@ def test_needs_attention_section_exposes_risk_chips_and_filters():
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
 
     chips = needs["risk_chips"]
-    assert [c["key"] for c in chips] == ["priority", "low_risk"]
-    assert {c["count"] for c in chips} == {2, 1}
+    assert [c["key"] for c in chips] == ["high", "medium", "low_risk"]
+    high_chip = next(c for c in chips if c["key"] == "high")
+    low_chip = next(c for c in chips if c["key"] == "low_risk")
+    assert high_chip["count"] == 2
+    assert low_chip["count"] == 1
     assert all("sev" in c and "label" in c for c in chips)
 
     filters = needs["filters"]
-    assert [f["key"] for f in filters] == ["all", "priority", "low_risk"]
+    assert [f["key"] for f in filters] == ["all", "high", "medium", "low_risk"]
     assert filters[0]["pressed"] is True
     assert all(not f["pressed"] for f in filters[1:])
     assert all("label" in f for f in filters)
@@ -196,8 +207,8 @@ def test_skipped_grouped_with_per_group_cap():
 @pytest.mark.parametrize(
     ("bucket", "expected"),
     [
-        (ClassificationBucket.UPLOAD_CANDIDATE, "priority"),
-        (ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED, "priority"),
+        (ClassificationBucket.UPLOAD_CANDIDATE, "high"),
+        (ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED, "high"),
         (ClassificationBucket.HASH_ONLY, "low_risk"),
         (ClassificationBucket.SKIPPED, None),
     ],
@@ -218,26 +229,26 @@ def test_needs_attention_tier_has_extension_subgroups_alphabetical():
     view = build_report_view(report)
 
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
-    priority = next(g for g in needs["groups"] if g["key"] == "priority")
+    high = next(g for g in needs["groups"] if g["key"] == "high")
     low_risk = next(g for g in needs["groups"] if g["key"] == "low_risk")
 
     # Subgroups alphabetical by extension key, "" first
-    assert [sg["key"] for sg in priority["subgroups"]] == ["", "exe", "sh"]
-    assert priority["subgroups"][0]["title"] == "(no extension)"
-    assert priority["subgroups"][1]["title"] == ".exe"
+    assert [sg["key"] for sg in high["subgroups"]] == ["", "exe", "sh"]
+    assert high["subgroups"][0]["title"] == "(no extension)"
+    assert high["subgroups"][1]["title"] == ".exe"
     exe_names = {
         f["name"]
-        for f in next(sg for sg in priority["subgroups"] if sg["key"] == "exe")["files"]
+        for f in next(sg for sg in high["subgroups"] if sg["key"] == "exe")["files"]
     }
     assert exe_names == {"alpha.exe", "beta.exe"}
-    assert priority["subgroups"][2]["title"] == ".sh"
+    assert high["subgroups"][2]["title"] == ".sh"
 
     assert [sg["key"] for sg in low_risk["subgroups"]] == ["txt"]
     assert low_risk["subgroups"][0]["title"] == ".txt"
 
 
 def test_needs_attention_subgroup_per_group_cap():
-    # 750 .exe + 200 .sh files, all PRIORITY (UPLOAD_CANDIDATE)
+    # 750 .exe + 200 .sh files, all HIGH via UPLOAD_CANDIDATE
     results = [
         _needs_attention_result(f"a{i}.exe", ClassificationBucket.UPLOAD_CANDIDATE)
         for i in range(750)
@@ -248,8 +259,8 @@ def test_needs_attention_subgroup_per_group_cap():
     report = build_scan_report(Path("/scan"), results, online=True, upload_consent=False)
     view = build_report_view(report)
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
-    priority = next(g for g in needs["groups"] if g["key"] == "priority")
-    subgroups = {sg["key"]: sg for sg in priority["subgroups"]}
+    high = next(g for g in needs["groups"] if g["key"] == "high")
+    subgroups = {sg["key"]: sg for sg in high["subgroups"]}
     assert set(subgroups) == {"exe", "sh"}
     assert subgroups["exe"]["total"] == 750
     assert subgroups["exe"]["hidden"] == 250
@@ -258,8 +269,8 @@ def test_needs_attention_subgroup_per_group_cap():
     assert subgroups["sh"]["hidden"] == 0
     assert len(subgroups["sh"]["files"]) == 200
     # Tier-level flat field preserved (uncapped) for live-update routing
-    assert priority["total"] == 950
-    assert priority["hidden"] == 0
+    assert high["total"] == 950
+    assert high["hidden"] == 0
 
 
 def test_needs_attention_filters_and_chips_unchanged_by_subgrouping():
@@ -271,7 +282,7 @@ def test_needs_attention_filters_and_chips_unchanged_by_subgrouping():
     view = build_report_view(report)
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
     # risk_chips and filters remain tier-only; no per-extension filter entries leaked
-    assert [c["key"] for c in needs["risk_chips"]] == ["priority", "low_risk"]
-    assert [f["key"] for f in needs["filters"]] == ["all", "priority", "low_risk"]
+    assert [c["key"] for c in needs["risk_chips"]] == ["high", "medium", "low_risk"]
+    assert [f["key"] for f in needs["filters"]] == ["all", "high", "medium", "low_risk"]
     assert needs["filters"][0]["pressed"] is True
     assert all(not f["pressed"] for f in needs["filters"][1:])

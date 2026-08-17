@@ -82,7 +82,7 @@
       {% endif %}
       {% if section.groups %}
       {% for group in section.groups %}
-      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'priority' %} open{% endif %}>
+      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'high' %} open{% endif %}>
         <summary class="group-head"><span class="caret" aria-hidden="true">▸</span> {{ group.title }} <span class="count">{{ group.total }}</span></summary>
         {% if group.subgroups %}
         {% for subgroup in group.subgroups %}
@@ -147,8 +147,10 @@ document.querySelectorAll('.filter-pills').forEach((pills) => {
       scanAllBtn.dataset.target = key;
       scanAllBtn.textContent = key === 'all'
         ? 'Upload and scan all unverified'
-        : key === 'priority'
-        ? 'Upload and scan all priority'
+        : key === 'high'
+        ? 'Upload and scan all high priority'
+        : key === 'medium'
+        ? 'Upload and scan all medium priority'
         : 'Upload and scan all lower risk';
     }
   });
@@ -176,6 +178,10 @@ let batchTerminalReceived = false;
 let lastBatchDone = 0;
 let lastBatchTotal = 0;
 let lastBatchPath = null;
+let perFileQueue = [];
+let perFileQueueRunning = false;
+let perFileQueueDone = 0;
+let perFileQueueTotal = 0;
 
 function filePath(index) {
   return FILE_PATHS[String(index)] || null;
@@ -215,6 +221,29 @@ function updateSectionCount(section) {
   section.querySelectorAll(':scope > .btn-scan-all').forEach((button) => {
     button.disabled = total === 0;
     button.hidden = total === 0;
+  });
+}
+
+function updateGroupCounts(section) {
+  if (!section) return;
+  section.querySelectorAll(':scope > details.group').forEach((group) => {
+    const groupFiles = group.querySelectorAll('details.file').length;
+    const groupCount = group.querySelector(':scope > .group-head .count');
+    if (groupCount) groupCount.textContent = groupFiles;
+    group.querySelectorAll(':scope > details.group.subgroup').forEach((subgroup) => {
+      const subgroupFiles = subgroup.querySelectorAll('details.file').length;
+      const subgroupCount = subgroup.querySelector(':scope > .group-head .count');
+      if (subgroupCount) subgroupCount.textContent = subgroupFiles;
+      subgroup.hidden = subgroupFiles === 0;
+    });
+    group.hidden = groupFiles === 0;
+  });
+  section.querySelectorAll('.risk-chip').forEach((chip) => {
+    const key = chip.dataset.filter;
+    const group = section.querySelector(`:scope > details.group[data-group="${CSS.escape(key)}"]`);
+    const count = group ? group.querySelectorAll('details.file').length : 0;
+    const countEl = chip.querySelector('b');
+    if (countEl) countEl.textContent = count;
   });
 }
 
@@ -322,6 +351,8 @@ function applyFileUpdate(data) {
 
   updateSectionCount(previousSection);
   updateSectionCount(destination);
+  updateGroupCounts(previousSection);
+  updateGroupCounts(destination);
   destination.hidden = false;
   const navLink = document.querySelector(`.report-nav a[href="#${destination.id}"]`);
   if (navLink) navLink.hidden = false;
@@ -428,6 +459,7 @@ async function scanFile(index, statusEl, hooks = {}) {
         if (data.state === 'done') {
           if (statusEl) statusEl.textContent = 'done - ' + (data.outcome || '').replace('_', ' ');
           applyFileUpdate(data);
+          updateSummaryTiles(data.summary);
           es.close(); resolve('done');
         } else if (data.state === 'error') {
           const reason = data.error || 'Scan failed';
@@ -451,6 +483,70 @@ async function scanFile(index, statusEl, hooks = {}) {
     return 'error';
   }
 }
+
+function drainPerFileQueue() {
+  if (perFileQueueRunning) return;
+  if (perFileQueue.length === 0) {
+    if (perFileQueueTotal > 0) {
+      setUploadProgress(
+        perFileQueueDone,
+        perFileQueueTotal,
+        'Queue complete.',
+        'Per-file upload queue',
+      );
+    }
+    perFileQueueDone = 0;
+    perFileQueueTotal = 0;
+    return;
+  }
+  const item = perFileQueue.shift();
+  perFileQueueRunning = true;
+  if (perFileQueueTotal === 0) {
+    perFileQueueTotal = perFileQueue.length + 1;
+    perFileQueueDone = 0;
+  }
+  runQueuedScan(item);
+}
+
+function runQueuedScan(item) {
+  const {index, button, statusEl, path} = item;
+  const pos = perFileQueueDone + 1;
+  setUploadProgress(
+    perFileQueueDone,
+    perFileQueueTotal,
+    `${path} · queued`,
+    `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
+  );
+  scanFile(index, statusEl, {
+    onState: (state) => setUploadProgress(
+      perFileQueueDone,
+      perFileQueueTotal,
+      `${path} · ${state}`,
+      `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
+    ),
+    onError: (reason) => setUploadProgress(
+      perFileQueueDone,
+      perFileQueueTotal,
+      `${path} · ${reason}`,
+      `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
+    ),
+  }).then((result) => {
+    perFileQueueDone += 1;
+    if (result === 'done') {
+      setUploadProgress(
+        perFileQueueDone,
+        perFileQueueTotal,
+        `${path} · completed`,
+        `Per-file upload queue (${perFileQueueDone} of ${perFileQueueTotal})`,
+      );
+    } else {
+      button.disabled = false;
+    }
+    perFileQueueRunning = false;
+    drainPerFileQueue();
+  });
+}
+
 const scanAll = document.getElementById('scan-all');
 function setScanAllDisabled(disabled) {
   document.querySelectorAll('.btn-scan-all').forEach((button) => {
@@ -462,20 +558,13 @@ document.addEventListener('click', (event) => {
   const button = event.target.closest('.btn-scan');
   if (!button) return;
   const index = button.dataset.index;
+  if (perFileQueue.some((item) => item.index === index)) return;
   const path = filePath(index) || `file ${index}`;
   const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
   button.disabled = true;
-  setUploadProgress(0, 1, `${path} · queued`, 'Single file upload');
-  scanFile(index, statusEl, {
-    onState: (state) => setUploadProgress(0, 1, `${path} · ${state}`),
-    onError: (reason) => setUploadProgress(0, 1, `${path} · ${reason}`),
-  }).then((result) => {
-    if (result === 'done') {
-      setUploadProgress(1, 1, `${path} · completed`, 'Single file upload');
-    } else {
-      button.disabled = false;
-    }
-  });
+  if (statusEl) statusEl.textContent = 'queued…';
+  perFileQueue.push({index, button, statusEl, path});
+  drainPerFileQueue();
 });
 
 document.addEventListener('click', async (event) => {
@@ -524,6 +613,16 @@ document.addEventListener('click', async (event) => {
   connectBatch(body.job_id);
 });
 cancelUpload.addEventListener('click', async () => {
+  if (perFileQueue.length > 0 || perFileQueueRunning) {
+    perFileQueue = [];
+    setUploadProgress(
+      perFileQueueDone,
+      perFileQueueTotal,
+      'Cancelling after current file finishes…',
+      'Per-file upload queue',
+    );
+    return;
+  }
   if (!activeBatchJobId) return;
   batchCancelRequested = true;
   cancelUpload.disabled = true;
@@ -546,6 +645,51 @@ cancelUpload.addEventListener('click', async () => {
     setUploadProgress(lastBatchDone, lastBatchTotal, 'Connection failed while requesting cancellation');
   }
 });
+
+async function reconnectPerFileScans() {
+  let response;
+  try {
+    response = await fetch(`/reports/${REPORT_ID}/files/scan/active`);
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const body = await responseJson(response);
+  if (!body.active || !body.jobs) return;
+  body.jobs.forEach((job) => {
+    const path = filePath(String(job.index)) || `file ${job.index}`;
+    const statusEl = document.querySelector(`.scan-status[data-index="${job.index}"]`);
+    perFileQueueTotal = 1;
+    perFileQueueDone = 0;
+    setUploadProgress(0, 1, `${path} · ${job.state || 'running'}`, 'Per-file upload queue (1 of 1)');
+    const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.state === 'done') {
+        applyFileUpdate(data);
+        updateSummaryTiles(data.summary);
+        setUploadProgress(1, 1, `${path} · completed`, 'Per-file upload queue (1 of 1)');
+        perFileQueueTotal = 0;
+        perFileQueueDone = 0;
+        es.close();
+      } else if (data.state === 'error') {
+        setUploadProgress(0, 1, `${path} · ${data.error || 'Scan failed'}`, 'Per-file upload queue (1 of 1)');
+        perFileQueueTotal = 0;
+        perFileQueueDone = 0;
+        es.close();
+      } else {
+        setUploadProgress(0, 1, `${path} · ${data.state}`, 'Per-file upload queue (1 of 1)');
+      }
+    };
+    es.onerror = () => {
+      perFileQueueTotal = 0;
+      perFileQueueDone = 0;
+      es.close();
+    };
+  });
+}
+
 reconnectActiveBatch();
+reconnectPerFileScans();
 </script>
 {% endblock %}

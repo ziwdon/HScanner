@@ -310,6 +310,12 @@ class FileScanManager:
     def has_active(self) -> bool:
         return any(not job.is_terminal for _, job in self._jobs.values())
 
+    def active_jobs_for_report(self, report_id: str) -> list[FileScanJob]:
+        return [
+            job for _, job in self._jobs.values()
+            if job.report_id == report_id and not job.is_terminal
+        ]
+
     def enqueue(self, report_id: str, index: int, coro_factory) -> FileScanJob:
         if self._guard():
             raise JobBusy("a scan is already in progress")

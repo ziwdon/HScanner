@@ -39,14 +39,20 @@ buckets:
     extensions:
       [".pdf", ".docx", ".xlsx", ".mp4", ".mkv", ".png", ".jpg", ".jpeg", ".ogg", ".wav",
        ".svg", ".ttf", ".otf", ".ttc",
-       ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc"]
+       ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc",
+       ".json", ".xml", ".csv", ".tsv", ".yaml", ".yml", ".toml", ".ini",
+       ".cfg", ".conf", ".lock", ".map", ".html", ".htm", ".css",
+       ".sql", ".graphql", ".proto"]
     reason: "hash-only by default"
 
   upload_candidate:
-    extensions:
-      [".sh", ".bash", ".zsh", ".py", ".pyc", ".pyd", ".rpy", ".rpym", ".rpyc", ".rpymc", ".rpyb", ".rpa", ".pl", ".rb", ".js", ".jar",
-       ".so", ".bin", ".appimage", ".deb", ".rpm", ".run", ".exe", ".dll", ".msi",
-       ".scr", ".bat", ".cmd", ".ps1", ".com", ".vbs", ".wsf", ".lnk"]
+    high_extensions:
+      [".exe", ".dll", ".so", ".bin", ".appimage", ".deb", ".rpm", ".msi", ".run",
+       ".scr", ".com", ".lnk",
+       ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1", ".vbs", ".wsf"]
+    medium_extensions:
+      [".py", ".pyc", ".pyd", ".rpy", ".rpym", ".rpyc", ".rpymc", ".rpyb", ".rpa",
+       ".pl", ".rb", ".js", ".jar"]
     executable_bit: true
     elf_magic: true
     shebang: true

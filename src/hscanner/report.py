@@ -20,6 +20,7 @@ from hscanner.models import (
     ScanOutcome,
     ScanStatus,
     UploadStatus,
+    risk_tier_for_legacy_bucket,
 )
 
 
@@ -146,6 +147,7 @@ class ReportFile:
     shebang: bool
     elf: bool
     engine_id: str | None = None
+    risk_tier: str = ""
 
     @property
     def engine_checked(self) -> bool:
@@ -221,6 +223,7 @@ def _report_file(index: int, result: FileResult) -> ReportFile:
         sha256=result.sha256,
         classification_bucket=result.classification.bucket.value,
         classification_reason=result.classification.reason,
+        risk_tier=result.classification.risk_tier.value,
         hash_eligible=result.classification.hash_eligible,
         upload_eligible=result.classification.upload_eligible,
         suspicious=result.classification.suspicious,
@@ -257,6 +260,7 @@ def _report_file_payload(file: ReportFile) -> dict[str, Any]:
         "sha256": file.sha256,
         "classification_bucket": file.classification_bucket,
         "classification_reason": file.classification_reason,
+        "risk_tier": file.risk_tier,
         "hash_eligible": file.hash_eligible,
         "upload_eligible": file.upload_eligible,
         "suspicious": file.suspicious,
@@ -296,7 +300,11 @@ def _report_file_payload(file: ReportFile) -> dict[str, Any]:
 def compute_summary(files: tuple[ReportFile, ...], metrics: RequestMetrics) -> ReportSummary:
     return ReportSummary(
         inventoried=len(files),
-        scanned=sum(file.engine_checked for file in files),
+        scanned=sum(
+            file.outcome in {ScanOutcome.INFECTED.value, ScanOutcome.NO_DETECTIONS.value}
+            or file.upload_status == UploadStatus.ANALYSIS_COMPLETE.value
+            for file in files
+        ),
         infected=sum(file.outcome == ScanOutcome.INFECTED.value for file in files),
         needs_attention=sum(
             file.outcome == ScanOutcome.NEEDS_ATTENTION.value for file in files
@@ -484,6 +492,17 @@ def _risk_label_from_payload(file: dict[str, Any]) -> str:
     return RiskLabel.UNKNOWN.value
 
 
+def _risk_tier_from_payload(file: dict[str, Any]) -> str:
+    """Restore ``ReportFile.risk_tier`` from a payload, using the legacy
+    bucket mapping when the field is absent (persisted v1/v2 reports
+    predate the HIGH/MEDIUM split)."""
+    raw = str(file.get("risk_tier") or "")
+    if raw:
+        return raw
+    bucket = ClassificationBucket(str(file.get("classification_bucket", "hash_only")))
+    return risk_tier_for_legacy_bucket(bucket).value
+
+
 def _action_from_payload(file: dict[str, Any]) -> str:
     if file.get("outcome") == ScanOutcome.SKIPPED.value:
         return ReportAction.SKIPPED.value
@@ -518,6 +537,7 @@ def _report_file_from_payload(file: dict[str, Any]) -> ReportFile:
         sha256=file.get("sha256"),
         classification_bucket=str(file["classification_bucket"]),
         classification_reason=str(file["classification_reason"]),
+        risk_tier=_risk_tier_from_payload(file),
         hash_eligible=bool(file["hash_eligible"]),
         upload_eligible=bool(file["upload_eligible"]),
         suspicious=bool(file["suspicious"]),

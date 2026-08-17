@@ -216,10 +216,17 @@ landed.
 (spec `docs/superpowers/specs/2026-06-22-risk-prioritized-scan-design.md`, plan
 `docs/superpowers/plans/2026-06-22-risk-prioritized-scan.md`). Verified ready-to-merge by the
 final whole-branch review.
-- **Risk tiers:** `RiskTier` enum (PRIORITY / LOW_RISK / SKIPPED) derived from classification
-  bucket in `src/hscanner/models.py`; `risk_tier_for(bucket)` resolves the mapping.
+- **Risk tiers:** `RiskTier` enum (HIGH / MEDIUM / LOW_RISK / SKIPPED) set explicitly by
+  the classifier on `Classification.risk_tier` in `src/hscanner/models.py`;
+  `risk_tier_for_classification(cls)` reads the field, `risk_tier_for_legacy_bucket(bucket)`
+  is the worst-case back-compat mapping for v1/v2 reports (UPLOAD_CANDIDATE /
+  SUSPICIOUS_UPLOAD_BLOCKED → HIGH, HASH_ONLY → LOW_RISK, SKIPPED → SKIPPED). HIGH =
+  OS-shell-runnable / native code (`.exe`/`.dll`/`.so`/`.bin`/`.sh`/`.bat`/ …), MEDIUM =
+  runtime/interpreter required (`.py`/`.js`/`.jar`/…), LOW_RISK = data/config/markup/
+  docs/media. The classifier's catch-all fallback honors `matching.default_bucket`
+  (default `hash_only`) so unrecognized data files are LOW_RISK.
 - **Default-on bypass:** low-risk VT lookups are skipped by default (`bypass_low_risk=True` in
-  policy); only PRIORITY-tier files are queried in folder scans, cutting quota use. CLI flag
+  policy); only HIGH + MEDIUM-tier files are queried in folder scans, cutting quota use. CLI flag
   `--no-bypass` re-enables low-risk lookups.
 - **Hash-only folder scans:** the folder-level upload checkbox is removed; `run_online_scan` no
   longer uploads during folder scans (upload consent is now per-file). Files not found by hash
@@ -352,8 +359,14 @@ spec change and the user's sign-off:
 
 The spec defines several interlocking taxonomies — keep them aligned when editing either side:
 
-- Classification buckets → Risk labels → Report categories: see the **Bucket to report mapping**
-  table in the spec. Changing one column means updating the table.
+- Classification buckets → Risk tiers → Risk labels → Report categories: see the **Bucket
+  to report mapping** table in the spec. Changing one column means updating the table.
+  Risk tiers are `HIGH` / `MEDIUM` / `LOW_RISK` / `SKIPPED` (set explicitly by the
+  classifier at classify-time on `Classification.risk_tier`; persisted on
+  `ReportFile.risk_tier`; `risk_tier_for_legacy_bucket` is the worst-case back-compat
+  mapping for v1/v2 reports). The classifier's catch-all fallback honors
+  `matching.default_bucket` (default `hash_only`); unknown data files (.json/.xml/.csv…)
+  route to `LOW_RISK` rather than being promoted to a priority tier.
 - Error statuses, CLI exit codes (with deterministic precedence), and the engine quota model
   are all enumerated in the spec — extend the tables there rather than inventing ad-hoc codes.
 

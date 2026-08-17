@@ -11,4 +11,6 @@ def test_default_policy_has_required_safety_defaults() -> None:
     assert ".env" in policy["buckets"]["sensitive"]["filename_patterns"]
     assert ".env.*" in policy["buckets"]["sensitive"]["filename_patterns"]
     assert ".txt" in policy["buckets"]["skipped"]["extensions"]
-    assert ".sh" in policy["buckets"]["upload_candidate"]["extensions"]
+    upload_candidate = policy["buckets"]["upload_candidate"]
+    assert ".sh" in upload_candidate["high_extensions"]
+    assert ".py" in upload_candidate["medium_extensions"]

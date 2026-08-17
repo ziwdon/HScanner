@@ -36,7 +36,8 @@ from hscanner.models import (
     FileResult,
     ReportAction,
     RiskTier,
-    risk_tier_for,
+    risk_tier_for_classification,
+    risk_tier_for_legacy_bucket,
 )
 from hscanner.policy.loader import load_default_policy, parse_quota_policy
 from hscanner.progress import EventType
@@ -541,6 +542,7 @@ def _file_terminal_payload(request: Request, report_id: str, index: int, job) ->
         "flagged": f.detection_ratio.flagged,
         "total_engines": f.detection_ratio.total,
         "permalink": f.permalink,
+        "summary": _summary_payload(report),
         **_live_file_payload(f),
     }
 
@@ -575,6 +577,26 @@ def _live_file_payload(file) -> dict:
 
 def _is_unresolved_scan_candidate(file) -> bool:
     return file.outcome in {"needs_attention", "error"} and file.upload_eligible
+
+
+_TIER_VALUE_TO_GROUP_KEY = {
+    RiskTier.HIGH.value: "high",
+    RiskTier.MEDIUM.value: "medium",
+    RiskTier.LOW_RISK.value: "low_risk",
+}
+
+
+def _report_file_tier_key(file) -> str | None:
+    """Resolve the Needs-attention tier group key ("high" / "medium" /
+    "low_risk") for a stored ReportFile, with a legacy-bucket fallback
+    for persisted reports that predate the HIGH/MEDIUM split and for
+    tier values that don't map to a Needs-attention subgroup (e.g.
+    "skipped")."""
+    if file.risk_tier:
+        key = _TIER_VALUE_TO_GROUP_KEY.get(file.risk_tier)
+        if key is not None:
+            return key
+    return tier_key_for_bucket(ClassificationBucket(file.classification_bucket))
 
 
 @router.post("/reports/{report_id}/files/{index}/scan")
@@ -616,7 +638,7 @@ async def scan_report_file(request: Request, report_id: str, index: int) -> Resp
             return JSONResponse({"reason": reason}, status_code=400)
         prefix = read_magic(record.path)
         cls = reclassify_with_signals(record, base, prefix, policy)
-        if risk_tier_for(cls.bucket) != RiskTier.PRIORITY:
+        if risk_tier_for_classification(cls) not in {RiskTier.HIGH, RiskTier.MEDIUM}:
             return JSONResponse({"reason": "not_priority"}, status_code=400)
         if not cls.upload_eligible:
             return JSONResponse({"reason": "too_large"}, status_code=400)
@@ -677,6 +699,26 @@ def scan_report_file_events(request: Request, report_id: str, index: int) -> Res
     )
 
 
+@router.get("/reports/{report_id}/files/scan/active")
+def active_file_scans(request: Request, report_id: str) -> Response:
+    """Return active per-file scan jobs for this report so the frontend
+    can reconnect after a page refresh."""
+    report = request.app.state.report_registry.get(report_id)
+    if report is None:
+        return JSONResponse({"error": "report expired or unavailable"}, status_code=404)
+    manager = request.app.state.file_scan_manager
+    jobs = manager.active_jobs_for_report(report_id)
+    if not jobs:
+        return JSONResponse({"active": False})
+    return JSONResponse({
+        "active": True,
+        "jobs": [
+            {"job_id": job.id, "index": job.index, "state": job.state}
+            for job in jobs
+        ],
+    })
+
+
 @router.post("/reports/{report_id}/scan-unverified")
 async def scan_unverified(request: Request, report_id: str) -> Response:
     """Start or return the active server-side batch for upload-eligible attention files."""
@@ -690,21 +732,23 @@ async def scan_unverified(request: Request, report_id: str) -> Response:
     except Exception:
         body = None
     target = (body or {}).get("target", "all")
-    if target not in {"all", "priority", "low_risk"}:
+    if target not in {"all", "high", "medium", "low_risk", "priority"}:
         return JSONResponse(
             {"error": f"unknown target: {target}"}, status_code=400,
         )
 
     indices = [f.index for f in report.files if _is_unresolved_scan_candidate(f)]
     if target != "all":
-        indices = [
-            i
-            for i in indices
-            if tier_key_for_bucket(
-                ClassificationBucket(report.files[i].classification_bucket)
-            )
-            == target
-        ]
+        if target == "priority":
+            indices = [
+                i for i in indices
+                if _report_file_tier_key(report.files[i]) in {"high", "medium"}
+            ]
+        else:
+            indices = [
+                i for i in indices
+                if _report_file_tier_key(report.files[i]) == target
+            ]
     if not indices:
         return JSONResponse({"indices": [], "active": False}, status_code=202)
     manager = request.app.state.batch_file_scan_manager
@@ -859,6 +903,10 @@ def _clone_result_for_report_file(root: Path, file, source: FileResult) -> FileR
             upload_eligible=file.upload_eligible,
             hash_eligible=file.hash_eligible,
             suspicious=file.suspicious,
+            risk_tier=(
+                RiskTier(file.risk_tier) if file.risk_tier
+                else risk_tier_for_legacy_bucket(ClassificationBucket(file.classification_bucket))
+            ),
         ),
         sha256=file.sha256 or source.sha256,
         engine_id=source.engine_id,
@@ -910,6 +958,10 @@ def _error_result_for_report_file(root: Path, file, error: ErrorCode) -> FileRes
             upload_eligible=file.upload_eligible,
             hash_eligible=file.hash_eligible,
             suspicious=file.suspicious,
+            risk_tier=(
+                RiskTier(file.risk_tier) if file.risk_tier
+                else risk_tier_for_legacy_bucket(ClassificationBucket(file.classification_bucket))
+            ),
         ),
         sha256=file.sha256,
         engine_id=file.engine_id,

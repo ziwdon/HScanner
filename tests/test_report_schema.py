@@ -131,6 +131,59 @@ def test_summary_metrics_overlap_without_double_counting_outcomes(make_result) -
     assert report.summary.needs_attention == 0
 
 
+def test_scanned_excludes_needs_attention_hash_not_found(make_result) -> None:
+    """A file whose hash was checked but not found (needs_attention) should
+    NOT be counted as 'scanned' — the engine has no verdict on it."""
+    needs = make_result("unknown.sh")
+    needs.lookup_status = LookupStatus.NOT_FOUND
+    needs.outcome = ScanOutcome.NEEDS_ATTENTION
+    needs.outcome_reason = OutcomeReason.ENGINE_NOT_FOUND
+    classify_report_result(needs)
+
+    report = build_scan_report(Path("/scan"), [needs], online=True, upload_consent=False)
+    assert report.summary.needs_attention == 1
+    assert report.summary.scanned == 0
+
+
+def test_scanned_includes_uploaded_and_analyzed(make_result) -> None:
+    """A file that was uploaded and analysis completed should be counted as
+    'scanned' even if its outcome is still needs_attention (incomplete result)."""
+    from hscanner.models import AnalysisStatus, UploadStatus
+
+    uploaded = make_result("uploaded.sh")
+    uploaded.lookup_status = LookupStatus.NOT_FOUND
+    uploaded.upload_status = UploadStatus.ANALYSIS_COMPLETE
+    uploaded.analysis_status = AnalysisStatus.COMPLETED
+    uploaded.outcome = ScanOutcome.NEEDS_ATTENTION
+    uploaded.outcome_reason = OutcomeReason.INCOMPLETE_ENGINE_RESULT
+    classify_report_result(uploaded)
+
+    report = build_scan_report(Path("/scan"), [uploaded], online=True, upload_consent=False)
+    assert report.summary.uploaded == 1
+    assert report.summary.scanned == 1
+
+
+def test_scanned_counts_infected_and_no_detections(make_result) -> None:
+    """The scanned count includes files with a definitive engine verdict
+    (INFECTED or NO_DETECTIONS), plus uploaded+analyzed files."""
+    infected = make_result("malware.sh")
+    infected.lookup_status = LookupStatus.FOUND
+    infected.engine_stats = {"malicious": 5, "suspicious": 0, "undetected": 65}
+    infected.assessment_complete = True
+    classify_report_result(infected)
+    assert infected.outcome == ScanOutcome.INFECTED.value
+
+    clean = make_result("clean.sh")
+    clean.lookup_status = LookupStatus.FOUND
+    clean.engine_stats = {"malicious": 0, "suspicious": 0, "undetected": 70}
+    clean.assessment_complete = True
+    classify_report_result(clean)
+    assert clean.outcome == ScanOutcome.NO_DETECTIONS.value
+
+    report = build_scan_report(Path("/scan"), [infected, clean], online=True, upload_consent=False)
+    assert report.summary.scanned == 2
+
+
 def test_report_records_engine_identity():
     report = build_scan_report(
         Path("/tmp"), [], online=True, upload_consent=False,

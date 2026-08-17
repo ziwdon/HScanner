@@ -1,7 +1,13 @@
 from typing import Any
 
 from hscanner.engines.registry import ENGINES
-from hscanner.models import ClassificationBucket, RiskTier, risk_tier_for
+from hscanner.models import (
+    Classification,
+    ClassificationBucket,
+    RiskTier,
+    risk_tier_for_classification,
+    risk_tier_for_legacy_bucket,
+)
 from hscanner.policy.loader import load_default_policy
 from hscanner.report import ReportFile, ScanReport
 
@@ -79,6 +85,7 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
         "sev": severity,
         "classification_bucket": file.classification_bucket,
         "classification_reason": file.classification_reason,
+        "risk_tier": file.risk_tier,
         "scan_engine": _engine_name(file.engine_id),
         "lookup_status": _STATUS_LABELS[file.lookup_status],
         "upload_status": _STATUS_LABELS[file.upload_status],
@@ -101,18 +108,26 @@ def build_file_view(file: ReportFile) -> dict[str, Any]:
 
 
 _RISK_GROUP_META = {
-    RiskTier.PRIORITY.value: {"key": "priority", "title": "Priority", "sev": "sev-high"},
-    RiskTier.LOW_RISK.value: {"key": "low_risk", "title": "Lower risk", "sev": "sev-unknown"},
+    RiskTier.HIGH.value:     {"key": "high",     "title": "High priority",   "sev": "sev-high"},
+    RiskTier.MEDIUM.value:   {"key": "medium",   "title": "Medium priority", "sev": "sev-medium"},
+    RiskTier.LOW_RISK.value: {"key": "low_risk", "title": "Lower risk",      "sev": "sev-low"},
 }
 
 
+def tier_key_for_classification(cls: Classification) -> str | None:
+    """Resolve the Needs-attention tier key for a fresh Classification.
+    Single source of truth consumed by both the view layer and the batch
+    endpoint when a Classification is in hand."""
+    tier = risk_tier_for_classification(cls)
+    meta = _RISK_GROUP_META.get(tier.value)
+    return meta["key"] if meta is not None else None
+
+
 def tier_key_for_bucket(bucket: ClassificationBucket) -> str | None:
-    """Return the Needs attention tier key (`"priority"` / `"low_risk"`) for a
-    classification bucket, or ``None`` when the bucket is SKIPPED (or any tier
-    that doesn't map to a Needs attention subgroup). Single source of truth —
-    consumed by both ``group_for_file_view`` (view layer) and the batch
-    endpoint (`routes.py`) so the view and the backend never disagree."""
-    tier = risk_tier_for(bucket)
+    """Legacy-compatible tier key for persisted reports that predate the
+    HIGH/MEDIUM split. Reads from the bucket only — use
+    tier_key_for_classification for fresh classifications."""
+    tier = risk_tier_for_legacy_bucket(bucket)
     meta = _RISK_GROUP_META.get(tier.value)
     return meta["key"] if meta is not None else None
 
@@ -127,10 +142,20 @@ def group_for_file_view(file_view: dict[str, Any]) -> dict[str, str] | None:
     """
     outcome = file_view["outcome_key"]
     if outcome == "needs_attention":
-        key = tier_key_for_bucket(ClassificationBucket(file_view["classification_bucket"]))
-        if key is None:
+        tier_str = file_view.get("risk_tier") or ""
+        meta = _RISK_GROUP_META.get(tier_str)
+        if meta is None:
+            # Either the field is absent (legacy persisted report), or it
+            # carries a tier that does not map to a Needs-attention group
+            # (e.g. "skipped" forced in by a test fixture). Fall back to
+            # the legacy bucket mapping so the file always lands in one
+            # of the three Needs-attention groups rather than dropping.
+            tier = risk_tier_for_legacy_bucket(
+                ClassificationBucket(file_view["classification_bucket"])
+            )
+            meta = _RISK_GROUP_META.get(tier.value)
+        if meta is None:
             return None
-        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
         return {"key": meta["key"], "title": meta["title"]}
     if outcome in {"no_detections", "skipped"}:
         ext = file_view["extension"]
@@ -142,16 +167,16 @@ def _group_needs_attention_by_risk(
     files: list[dict[str, Any]], cap: int
 ) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {
-        "priority": [],
-        "low_risk": [],
+        meta["key"]: [] for meta in _RISK_GROUP_META.values()
     }
     for file in files:
         group = group_for_file_view(file)
-        buckets.setdefault(group["key"] if group else "priority", []).append(file)
+        key = group["key"] if group and group["key"] in buckets else "high"
+        buckets[key].append(file)
     groups = []
-    for key in ("priority", "low_risk"):
+    for meta in _RISK_GROUP_META.values():
+        key = meta["key"]
         group_files = buckets.get(key, [])
-        meta = next(m for m in _RISK_GROUP_META.values() if m["key"] == key)
         groups.append({
             "key": key,
             "title": meta["title"],
@@ -225,16 +250,16 @@ def build_report_view(
                     "key": g["key"],
                     "label": g["title"],
                     "count": g["total"],
-                    "sev": _RISK_GROUP_META[
-                        RiskTier.PRIORITY.value if g["key"] == "priority"
-                        else RiskTier.LOW_RISK.value
-                    ]["sev"],
+                    "sev": next(
+                        m["sev"] for m in _RISK_GROUP_META.values() if m["key"] == g["key"]
+                    ),
                 }
                 for g in risk_groups
             ]
             section["filters"] = [
                 {"key": "all", "label": "All", "pressed": True},
-                {"key": "priority", "label": "Priority", "pressed": False},
+                {"key": "high", "label": "High", "pressed": False},
+                {"key": "medium", "label": "Medium", "pressed": False},
                 {"key": "low_risk", "label": "Lower risk", "pressed": False},
             ]
         elif outcome in {"no_detections", "skipped"}:
