@@ -14,20 +14,19 @@ class ClassificationBucket(StrEnum):
 
 
 class RiskTier(StrEnum):
-    PRIORITY = "priority"
+    HIGH = "high"
+    MEDIUM = "medium"
     LOW_RISK = "low_risk"
     SKIPPED = "skipped"
 
 
-_PRIORITY_BUCKETS = {
-    ClassificationBucket.UPLOAD_CANDIDATE,
-    ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED,
-}
+def risk_tier_for_classification(cls: "Classification") -> RiskTier:
+    return cls.risk_tier
 
 
-def risk_tier_for(bucket: "ClassificationBucket") -> RiskTier:
-    if bucket in _PRIORITY_BUCKETS:
-        return RiskTier.PRIORITY
+def risk_tier_for_legacy_bucket(bucket: "ClassificationBucket") -> RiskTier:
+    if bucket in {ClassificationBucket.UPLOAD_CANDIDATE, ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED}:
+        return RiskTier.HIGH
     if bucket == ClassificationBucket.SKIPPED:
         return RiskTier.SKIPPED
     return RiskTier.LOW_RISK
@@ -147,6 +146,7 @@ class Classification:
     hash_eligible: bool
     suspicious: bool = False
     skip_reason: OutcomeReason | None = None
+    risk_tier: RiskTier = RiskTier.LOW_RISK
 
 
 @dataclass
