@@ -308,6 +308,8 @@ def test_cancel_drops_pending_files_from_the_total(tmp_path, state_home) -> None
         # Clicks span ~0.5 s; cancel lands while file 1 (0.8 s scan) is still in flight
         # or has just finished — either way at least one pending file is discarded.
         records = _drive(server, clicks=clicks, pre_wait_ms=400, cancel_after_ms=1)
+        time.sleep(SCAN_SECONDS * 1.5)  # give a wrongly-surviving server job time to run
+        outcomes = _server_outcomes(server)
 
     by_label = {r["label"]: r for r in records}
     final = by_label["final"]
@@ -316,6 +318,10 @@ def test_cancel_drops_pending_files_from_the_total(tmp_path, state_home) -> None
     assert done == total, final
     assert 1 <= total < clicks, final
     assert final["bar"] == "100%", final
+    # Issue #13: pending files are queued on the server, so Cancel must discard them
+    # there too — the dropped files stay unscanned rather than running on silently.
+    scanned = sum(1 for outcome in outcomes.values() if outcome == "no_detections")
+    assert scanned == total, outcomes
 
 
 def test_header_scanned_count_updates_with_the_tile(tmp_path, state_home) -> None:
@@ -333,3 +339,62 @@ def test_header_scanned_count_updates_with_the_tile(tmp_path, state_home) -> Non
     assert final["detail"] == "Queue complete.", final
     assert final["tile_scanned"] == "1", final
     assert "3 files inventoried · 1 scanned with" in final["header"], final
+
+
+REFRESH_DRIVER = JS_DIR / "refresh_driver.mjs"
+
+
+def _drive_refresh(server: _LiveServer, *, clicks: int, page1_ms: int) -> list[dict]:
+    """Click ``clicks`` files on one page, close it after ``page1_ms``, load the report
+    again and observe the second page until its queue drains."""
+    env = {
+        **os.environ,
+        "BASE": server.base,
+        "REPORT_ID": server.report_id,
+        "CLICKS": str(clicks),
+        "PAGE1_MS": str(page1_ms),
+    }
+    proc = subprocess.run(
+        [NODE, str(REFRESH_DRIVER)], cwd=JS_DIR, env=env, capture_output=True, text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+
+
+def _server_outcomes(server: _LiveServer) -> dict[str, str]:
+    body = httpx.get(f"{server.base}/reports/{server.report_id}.json", timeout=5).json()
+    return {f["relative_path"]: f["outcome"] for f in body["files"]}
+
+
+def test_queued_files_survive_page_refresh(tmp_path, state_home) -> None:
+    """Issue #13: files queued with "Scan this file" must still be scanned — and shown as
+    queued — after the page is refreshed, not silently dropped with the card at "1 / 1"."""
+    clicks = 4
+    with _LiveServer(_make_folder(tmp_path, clicks)) as server:
+        # Page 1 is closed ~1 s after the clicks: file 1 done or in flight, 2–4 pending.
+        records = _drive_refresh(server, clicks=clicks, page1_ms=1000)
+        outcomes = _server_outcomes(server)
+
+    by_label = {r["label"]: r for r in records}
+    before = by_label["before-refresh"]
+    pending_before = [i for i, s in before["statuses"].items() if s == "queued…"]
+    assert len(pending_before) >= 2, before
+
+    after = by_label["after-refresh"]
+    # Every file that was still queued or uploading when the tab closed is shown as such,
+    # with its button disabled, and the card counts all of them.
+    unfinished = [i for i, s in before["statuses"].items() if s]
+    for i in unfinished:
+        assert after["buttons"][i] in ("disabled", "gone"), (i, after)
+        if after["buttons"][i] == "disabled":
+            assert after["statuses"][i] in ("queued…", "uploading…", "polling…"), (i, after)
+    total_after = _counts(after)[1]
+    assert total_after >= len(pending_before), after
+
+    final = by_label["final"]
+    assert final["detail"] == "Queue complete.", final
+    done, total = _counts(final)
+    assert done == total == total_after, final
+    # And the files actually got scanned.
+    assert outcomes == {f"a{i}.py": "no_detections" for i in range(1, clicks + 1)}, outcomes
