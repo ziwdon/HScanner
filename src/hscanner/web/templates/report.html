@@ -445,48 +445,55 @@ async function responseJson(response) {
   }
 }
 
-async function scanFile(index, statusEl, hooks = {}) {
-  if (statusEl) statusEl.textContent = 'queued…';
-  if (hooks.onState) hooks.onState('queued');
+// Every click is POSTed right away so the server holds the queue (issue #13);
+// the POSTs are chained so the server runs files in click order. The page keeps
+// its own mirror of that queue only to drive the progress card one file at a time.
+let perFilePostChain = Promise.resolve();
+
+// Resolves to null on 202, or to a reason string when the file cannot be queued.
+async function postScan(index, statusEl) {
   try {
     const post = await fetch(`/reports/${REPORT_ID}/files/${index}/scan`, {method: 'POST'});
-    if (!post.ok) {
-      const body = await responseJson(post);
-      const reason = body.reason || body.error || post.status;
-      if (statusEl) statusEl.textContent = 'Cannot scan: ' + reason;
-      if (hooks.onError) hooks.onError(reason);
-      return 'error';
-    }
-    return await new Promise((resolve) => {
-      const es = new EventSource(`/reports/${REPORT_ID}/files/${index}/scan/events`);
-      es.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.state === 'done') {
-          if (statusEl) statusEl.textContent = 'done - ' + (data.outcome || '').replace('_', ' ');
-          applyFileUpdate(data);
-          updateSummaryTiles(data.summary);
-          es.close(); resolve('done');
-        } else if (data.state === 'error') {
-          const reason = data.error || 'Scan failed';
-          if (statusEl) statusEl.textContent = reason;
-          es.close(); resolve('error');
-        } else {
-          if (statusEl) statusEl.textContent = data.state + '…';
-          if (hooks.onState) hooks.onState(data.state);
-        }
-      };
-      es.onerror = () => {
-        if (statusEl) statusEl.textContent = 'connection lost';
-        es.close();
-        if (hooks.onError) hooks.onError('connection lost');
-        resolve('error');
-      };
-    });
+    if (post.ok) return null;
+    const body = await responseJson(post);
+    const reason = body.reason || body.error || post.status;
+    if (statusEl) statusEl.textContent = 'Cannot scan: ' + reason;
+    return String(reason);
   } catch {
     if (statusEl) statusEl.textContent = 'connection failed';
-    if (hooks.onError) hooks.onError('connection failed');
-    return 'error';
+    return 'connection failed';
   }
+}
+
+function watchScan(index, statusEl, hooks = {}) {
+  return new Promise((resolve) => {
+    const es = new EventSource(`/reports/${REPORT_ID}/files/${index}/scan/events`);
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.state === 'done') {
+        if (statusEl) statusEl.textContent = 'done - ' + (data.outcome || '').replace('_', ' ');
+        applyFileUpdate(data);
+        updateSummaryTiles(data.summary);
+        es.close(); resolve('done');
+      } else if (data.state === 'error') {
+        const reason = data.error || 'Scan failed';
+        if (statusEl) statusEl.textContent = reason;
+        es.close(); resolve('error');
+      } else if (data.state === 'cancelled') {
+        if (statusEl) statusEl.textContent = 'cancelled';
+        es.close(); resolve('cancelled');
+      } else {
+        if (statusEl) statusEl.textContent = data.state + '…';
+        if (hooks.onState) hooks.onState(data.state);
+      }
+    };
+    es.onerror = () => {
+      if (statusEl) statusEl.textContent = 'connection lost';
+      es.close();
+      if (hooks.onError) hooks.onError('connection lost');
+      resolve('error');
+    };
+  });
 }
 
 // Re-render the per-file queue card from the shared counters. The title's
@@ -541,14 +548,21 @@ function drainPerFileQueue() {
 function runQueuedScan(item) {
   const {index, button, statusEl, path} = item;
   renderPerFileQueue(`${path} · queued`);
-  scanFile(index, statusEl, {
-    onState: (state) => renderPerFileQueue(`${path} · ${state}`),
-    onError: (reason) => renderPerFileQueue(`${path} · ${reason}`),
+  item.posted.then((failure) => {
+    if (failure) {
+      renderPerFileQueue(`${path} · ${failure}`);
+      return 'error';
+    }
+    return watchScan(index, statusEl, {
+      onState: (state) => renderPerFileQueue(`${path} · ${state}`),
+      onError: (reason) => renderPerFileQueue(`${path} · ${reason}`),
+    });
   }).then((result) => {
     if (result === 'done') {
       perFileQueueDetail = `${path} · completed`;
     } else {
-      button.disabled = false;
+      if (result === 'cancelled') renderPerFileQueue(`${path} · cancelled`);
+      if (button) button.disabled = false;
     }
     finishPerFileItem();
   });
@@ -571,7 +585,10 @@ document.addEventListener('click', (event) => {
   const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
   button.disabled = true;
   if (statusEl) statusEl.textContent = 'queued…';
-  perFileQueue.push({index, button, statusEl, path});
+  const item = {index, button, statusEl, path, posted: null};
+  item.posted = perFilePostChain.then(() => postScan(index, statusEl));
+  perFilePostChain = item.posted.then(() => undefined);
+  perFileQueue.push(item);
   enqueuePerFile();
   drainPerFileQueue();
 });
@@ -623,8 +640,19 @@ document.addEventListener('click', async (event) => {
 });
 cancelUpload.addEventListener('click', async () => {
   if (perFileQueue.length > 0 || perFileQueueRunning) {
-    perFileQueueTotal -= perFileQueue.length;
+    const pending = perFileQueue;
     perFileQueue = [];
+    perFileQueueTotal -= pending.length;
+    pending.forEach((item) => {
+      if (item.button) item.button.disabled = false;
+      if (item.statusEl) item.statusEl.textContent = 'cancelled';
+    });
+    // The pending jobs already live on the server: discard them there too, once
+    // any click POST still in flight has landed so it cannot slip in behind the
+    // cancel. The cancel joins the chain so a click right after it is not raced.
+    perFilePostChain = perFilePostChain
+      .then(() => fetch(`/reports/${REPORT_ID}/files/scan/cancel`, {method: 'POST'}))
+      .then(() => undefined, () => undefined);
     setUploadProgress(
       perFileQueueDone,
       perFileQueueTotal,
@@ -666,49 +694,29 @@ async function reconnectPerFileScans() {
   if (!response.ok) return;
   const body = await responseJson(response);
   if (!body.active || !body.jobs) return;
-  // If the click queue already has a running head (a click landed before this
-  // probe resolved), it owns the card; adopting a second head would double-count
-  // that click's job and reset the counters mid-queue.
-  if (perFileQueueRunning) return;
+  // Jobs this page already owns (a click that landed before the probe resolved)
+  // are skipped so they are not counted twice.
   const owned = new Set(perFileQueue.map((item) => String(item.index)));
-  const job = body.jobs.find((candidate) => !owned.has(String(candidate.index)));
-  if (!job) return;
-  // The queue model has a single running head, so only the first foreign job is
-  // tracked; any further server-side jobs (e.g. from another tab) are not shown.
-  const index = String(job.index);
-  const path = filePath(index) || `file ${job.index}`;
-  // Treat the server-side in-flight job as the running head of the same queue
-  // model the click path uses, so files queued after reconnect are counted.
-  perFileQueueRunning = true;
-  perFileQueueActiveIndex = index;
-  enqueuePerFile();
-  renderPerFileQueue(`${path} · ${job.state || 'running'}`);
-  const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
-  let finished = false;
-  const finishOnce = () => {
-    if (finished) return;
-    finished = true;
-    es.close();
-    finishPerFileItem();
-  };
-  es.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    if (data.state === 'done') {
-      applyFileUpdate(data);
-      updateSummaryTiles(data.summary);
-      perFileQueueDetail = `${path} · completed`;
-      finishOnce();
-    } else if (data.state === 'error') {
-      renderPerFileQueue(`${path} · ${data.error || 'Scan failed'}`);
-      finishOnce();
-    } else {
-      renderPerFileQueue(`${path} · ${data.state}`);
-    }
-  };
-  es.onerror = () => {
-    renderPerFileQueue(`${path} · connection lost`);
-    finishOnce();
-  };
+  if (perFileQueueActiveIndex !== null) owned.add(perFileQueueActiveIndex);
+  let adopted = false;
+  for (const job of body.jobs) {
+    const index = String(job.index);
+    if (owned.has(index)) continue;
+    const button = document.querySelector(`.btn-scan[data-index="${index}"]`);
+    const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
+    if (button) button.disabled = true;
+    if (statusEl) statusEl.textContent = `${job.state || 'queued'}…`;
+    perFileQueue.push({
+      index,
+      button,
+      statusEl,
+      path: filePath(index) || `file ${job.index}`,
+      posted: Promise.resolve(null),
+    });
+    enqueuePerFile();
+    adopted = true;
+  }
+  if (adopted) drainPerFileQueue();
 }
 
 reconnectActiveBatch();

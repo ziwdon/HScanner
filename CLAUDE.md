@@ -7,6 +7,35 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Issue #13: per-file scan queue lost on page refresh — FIXED (2026-09-20).**
+>
+> **Symptom:** clicking "Scan this file" on several files then refreshing re-adopted only the
+> in-flight job; the pending files came back with enabled buttons, no status, were never
+> scanned, and the card ended "1 / 1 · Queue complete."
+> **Root cause (`report.html` JS):** the click queue POSTed a file only when it reached the head,
+> so pending files existed solely in tab memory, and `reconnectPerFileScans()` adopted one job.
+> (The server already serialized concurrent per-file POSTs on `FileScanManager._lock` and listed
+> running + queued jobs on `/files/scan/active`; the issue's "409" pointer was stale — 409 only
+> fires during a folder scan or batch.)
+> **Fix — convention: the server owns the per-file queue; the page is a view of it.** Every click
+> POSTs immediately (chained, so run order = click order); the page's queue only drives the
+> progress card; on load, every running/queued job from `/files/scan/active` is adopted (button
+> disabled, status shown). Cancel discards pending jobs locally **and** server-side via new
+> `POST /reports/{id}/files/scan/cancel` → `FileScanManager.cancel_pending()` (jobs still
+> `queued`; the in-flight one finishes; `cancelled` is a terminal `FileScanJob` state delivered on
+> the per-file SSE stream); pending files' buttons are re-enabled. Spec: "Per-file upload queue"
+> subsection under Upload Consent (local `docs/`).
+> **Tests:** `tests/js/refresh_driver.mjs` (page → close → reload in jsdom; reuse for refresh bugs)
+> + `test_queued_files_survive_page_refresh`; the cancel jsdom test also asserts the server did not
+> scan dropped files; `cancel_pending` manager/route/SSE tests.
+> **Review fixes folded in:** the cancel route is `async def` (a sync route ran the manager's
+> queue/task mutations in a threadpool → `RuntimeError` under loop debug and a stream that never
+> woke); the per-file SSE stream sends only the full terminal payload when the job is already
+> terminal (a bare `{"state":"done"}` first frame left the card/tiles stale); `FileScanManager`'s
+> `max_jobs` cap evicts terminal jobs only (a 33-click burst dropped a live job from
+> `/files/scan/active`). Cancel is report-wide (another tab's queued clicks are dropped too).
+> **Verification:** 740 passing tests (node deps installed); Ruff clean; `git diff --check` clean.
+
 > **Issue #12: "Scanned" defined differently on the progress page vs the report; report
 > header line stale after uploads — FIXED (2026-09-20).**
 >

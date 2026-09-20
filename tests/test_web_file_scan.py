@@ -1035,3 +1035,155 @@ def test_folder_scan_blocked_while_file_scan_active(tmp_path, monkeypatch):
     # Folder scan must be refused while file scan is active
     resp = client.post("/scan", data={"folder": str(scan_dir), "bypass_low_risk": "true"})
     assert resp.status_code == 409, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Issue #13: queued per-file jobs live on the server; Cancel drops the pending ones
+# ---------------------------------------------------------------------------
+
+
+def _seed_file_jobs(app, report_id, states):
+    """Inject per-file jobs (index → state) straight into the manager, in order."""
+    import time
+
+    from hscanner.web.jobs import FileScanJob
+
+    jobs = []
+    for index, state in states:
+        job = FileScanJob(f"job-{index}", report_id, index)
+        job.state = state
+        app.state.file_scan_manager._jobs[job.id] = (time.monotonic(), job)
+        jobs.append(job)
+    return jobs
+
+
+def test_cancel_pending_file_scans_endpoint(tmp_path, monkeypatch):
+    """POST /reports/{id}/files/scan/cancel discards queued jobs, keeps the running one,
+    and /files/scan/active no longer lists the cancelled ones."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    for name in ("a.sh", "b.sh", "c.sh"):
+        (scan_dir / name).write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client(vt_factory=lambda eid, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    running, *queued = _seed_file_jobs(
+        app, report.report_id, [(0, "uploading"), (1, "queued"), (2, "queued")]
+    )
+
+    resp = client.post(f"/reports/{report.report_id}/files/scan/cancel")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"cancelled": [1, 2]}
+    assert running.state == "uploading"
+    assert [j.state for j in queued] == ["cancelled", "cancelled"]
+
+    active = client.get(f"/reports/{report.report_id}/files/scan/active").json()
+    assert [j["index"] for j in active["jobs"]] == [0]
+
+    # Idempotent: nothing left to cancel.
+    assert client.post(f"/reports/{report.report_id}/files/scan/cancel").json() == {
+        "cancelled": []
+    }
+
+
+def test_cancel_pending_file_scans_unknown_report_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _, client = _make_app_and_client()
+    assert client.post("/reports/no-such-report/files/scan/cancel").status_code == 404
+
+
+def test_file_scan_events_end_with_cancelled_for_a_cancelled_job(tmp_path, monkeypatch):
+    """A page watching a queued file's stream gets a terminal ``cancelled`` event."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client(vt_factory=lambda eid, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    _seed_file_jobs(app, report.report_id, [(0, "cancelled")])
+
+    with client.stream("GET", f"/reports/{report.report_id}/files/0/scan/events") as s:
+        body = "".join(s.iter_text())
+    events = _parse_sse(body)
+    assert events[-1] == {"state": "cancelled"}
+    assert all(e["state"] == "cancelled" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_cancel_route_ends_a_watched_queued_stream(tmp_path, monkeypatch):
+    """Cancelling while a page watches a queued file's SSE stream must run on the event
+    loop (the route mutates loop-owned queues/tasks) and end that stream with ``cancelled``."""
+    import asyncio
+
+    import httpx
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, _ = _make_app_and_client(vt_factory=lambda eid, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    asyncio.get_running_loop().set_debug(True)  # surfaces cross-thread loop calls
+
+    release = asyncio.Event()
+
+    async def hold():
+        await release.wait()
+
+    manager = app.state.file_scan_manager
+    head = manager.enqueue(report.report_id, 0, hold)
+    queued = manager.enqueue(report.report_id, 1, hold)
+    await asyncio.sleep(0)
+    assert head.state == "uploading" and queued.state == "queued"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t"
+    ) as ac:
+        async def watch():
+            async with ac.stream(
+                "GET", f"/reports/{report.report_id}/files/1/scan/events"
+            ) as s:
+                return _parse_sse("".join([chunk async for chunk in s.aiter_text()]))
+
+        watcher = asyncio.create_task(watch())
+        try:
+            await asyncio.sleep(0.05)  # stream is subscribed
+            resp = await asyncio.wait_for(
+                ac.post(f"/reports/{report.report_id}/files/scan/cancel"), 5
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json() == {"cancelled": [1]}
+            events = await asyncio.wait_for(watcher, 5)
+        finally:
+            release.set()
+            if not watcher.done():
+                queued._emit("cancelled")  # wake the stream from the loop so teardown ends
+            await asyncio.wait_for(
+                asyncio.gather(head.task, queued.task, watcher, return_exceptions=True), 5
+            )
+    assert events[-1] == {"state": "cancelled"}
+
+
+def test_file_scan_events_connected_after_done_still_deliver_the_row_payload(
+    tmp_path, monkeypatch
+):
+    """A page that starts watching a job the server already finished (adopted after a
+    refresh, or queued behind others) must still get the full terminal payload, not a bare
+    ``{"state": "done"}`` frame that leaves its card and tiles stale."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir()
+    (scan_dir / "tool.sh").write_text("#!/bin/sh\necho hello\n")
+    app, client = _make_app_and_client(vt_factory=lambda eid, key: _FoundClient())
+    report = _seed_report(app, scan_dir)
+    idx = _idx(report, "tool.sh")
+    assert client.post(f"/reports/{report.report_id}/files/{idx}/scan").status_code == 202
+    job = app.state.file_scan_manager.latest(report.report_id, idx)
+    with client.stream("GET", f"/reports/{report.report_id}/files/{idx}/scan/events") as s:
+        "".join(s.iter_text())  # drain: the job is now done
+    assert job.state == "done"
+
+    with client.stream("GET", f"/reports/{report.report_id}/files/{idx}/scan/events") as s:
+        events = _parse_sse("".join(s.iter_text()))
+    assert events[0]["state"] == "done"
+    assert "file_card_html" in events[0], events

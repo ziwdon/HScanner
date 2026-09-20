@@ -272,7 +272,7 @@ class FileScanJob:
 
     @property
     def is_terminal(self) -> bool:
-        return self.state in ("done", "error")
+        return self.state in ("done", "error", "cancelled")
 
 
 class FileScanManager:
@@ -317,6 +317,18 @@ class FileScanManager:
             if job.report_id == report_id and not job.is_terminal
         ]
 
+    def cancel_pending(self, report_id: str) -> list[FileScanJob]:
+        """Discard this report's jobs that have not started yet; the running job
+        (the one holding the lock) is left to finish."""
+        cancelled = []
+        for _, job in self._jobs.values():
+            if job.report_id == report_id and job.state == "queued":
+                job._emit("cancelled")
+                if job.task is not None:
+                    job.task.cancel()
+                cancelled.append(job)
+        return cancelled
+
     def enqueue(self, report_id: str, index: int, coro_factory) -> FileScanJob:
         if self._guard():
             raise JobBusy("a scan is already in progress")
@@ -325,13 +337,20 @@ class FileScanManager:
             return existing
         job = FileScanJob(secrets.token_urlsafe(12), report_id, index)
         self._jobs[job.id] = (self._monotonic(), job)
+        # Cap the index by evicting finished jobs only; a queued/running job must stay
+        # findable (active_jobs_for_report, SSE reconnect) however many were clicked.
         while len(self._jobs) > self.max_jobs:
-            self._jobs.popitem(last=False)
+            stale = next((jid for jid, (_, j) in self._jobs.items() if j.is_terminal), None)
+            if stale is None:
+                break
+            del self._jobs[stale]
         job.task = asyncio.create_task(self._run(job, coro_factory))
         return job
 
     async def _run(self, job: FileScanJob, coro_factory) -> None:
         async with self._lock:  # serialize: one VT consumer at a time
+            if job.state == "cancelled":
+                return
             try:
                 job._emit("uploading")
                 result = await coro_factory()

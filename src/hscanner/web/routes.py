@@ -529,6 +529,8 @@ def _file_terminal_payload(request: Request, report_id: str, index: int, job) ->
     """Build the terminal SSE payload for a file scan job."""
     if job.state == "error":
         return {"state": "error", "error": job.error or "Internal error"}
+    if job.state == "cancelled":
+        return {"state": "cancelled"}
     report = request.app.state.report_registry.get(report_id)
     f = report.files[index] if report and 0 <= index < len(report.files) else None
     if f is None:
@@ -683,10 +685,14 @@ def scan_report_file_events(request: Request, report_id: str, index: int) -> Res
     async def _stream():
         queue = job.subscribe()
         try:
-            yield _sse({"state": job.state})
+            # A job that already finished gets only the full terminal payload below;
+            # a bare {"state": "done"} first would make the page close the stream
+            # before the row/summary data arrives.
+            if not job.is_terminal:
+                yield _sse({"state": job.state})
             while not job.is_terminal:
                 state = await queue.get()
-                if state != "done" and state != "error":
+                if not job.is_terminal:
                     yield _sse({"state": state})
             yield _sse(_file_terminal_payload(request, report_id, index, job))
         finally:
@@ -717,6 +723,19 @@ def active_file_scans(request: Request, report_id: str) -> Response:
             for job in jobs
         ],
     })
+
+
+@router.post("/reports/{report_id}/files/scan/cancel")
+async def cancel_pending_file_scans(request: Request, report_id: str) -> Response:
+    """Discard this report's queued (not yet started) per-file scans.
+
+    ``async`` so the manager mutates its jobs, subscriber queues and tasks on the
+    event loop rather than from a threadpool worker."""
+    report = request.app.state.report_registry.get(report_id)
+    if report is None:
+        return JSONResponse({"error": "report expired or unavailable"}, status_code=404)
+    cancelled = request.app.state.file_scan_manager.cancel_pending(report_id)
+    return JSONResponse({"cancelled": [job.index for job in cancelled]})
 
 
 @router.post("/reports/{report_id}/scan-unverified")
