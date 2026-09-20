@@ -7,6 +7,24 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Issue #12: "Scanned" defined differently on the progress page vs the report; report
+> header line stale after uploads — FIXED (2026-09-20).**
+>
+> **Symptom:** a folder of hash-unknown files read "5 scanned" on the live progress page /
+> `GET /scan/{id}/status` but "0 scanned" on the report; after per-file uploads the Scanned
+> tile moved but the header "N files inventoried · M scanned with …" stayed at the old value.
+> **Root cause:** `JobSnapshot.apply` still used the pre-PR-#9 definition (`lookup_status !=
+> "not_checked"`) while `compute_summary` counted verdict-or-completed-upload; the header line
+> was a static Jinja value with no live-update hook.
+> **Fix:** one definition — **`report.counts_as_scanned(outcome, upload_status)`** (definitive
+> `infected`/`no_detections` verdict **or** `upload_status == analysis_complete`) — used by
+> `compute_summary` and `JobSnapshot`. Any new surface that reports "scanned" must call it. The
+> header count is `<span data-summary-text="scanned">`; `updateSummaryTiles()` now updates every
+> `[data-summary-text="<key>"]` alongside the tiles (per-file and batch paths). Spec metric
+> definition updated (local `docs/`). Regression file: `tests/test_issue12_scanned_definition.py`
+> (+ a jsdom header test in `tests/test_report_page_queue_js.py`).
+> **Verification:** 731 passing tests (node deps installed); Ruff clean; `git diff --check` clean.
+
 > **Issue #11: per-file queue card total frozen at 1 — FIXED (2026-09-20).**
 >
 > **Symptom:** clicking "Scan this file" on several files scanned them all, but the progress

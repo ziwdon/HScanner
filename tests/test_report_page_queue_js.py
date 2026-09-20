@@ -316,3 +316,20 @@ def test_cancel_drops_pending_files_from_the_total(tmp_path, state_home) -> None
     assert done == total, final
     assert 1 <= total < clicks, final
     assert final["bar"] == "100%", final
+
+
+def test_header_scanned_count_updates_with_the_tile(tmp_path, state_home) -> None:
+    """Issue #12: after a per-file upload completes, the header line
+    "N files inventoried · M scanned with …" must move with the Scanned tile."""
+    with _LiveServer(_make_folder(tmp_path, 3)) as server:
+        records = _drive(server, clicks=1, pre_wait_ms=400)
+
+    by_label = {r["label"]: r for r in records}
+    before = by_label["before"]
+    assert before["tile_scanned"] == "0", before
+    assert "· 0 scanned with" in before["header"], before
+
+    final = by_label["final"]
+    assert final["detail"] == "Queue complete.", final
+    assert final["tile_scanned"] == "1", final
+    assert "3 files inventoried · 1 scanned with" in final["header"], final
