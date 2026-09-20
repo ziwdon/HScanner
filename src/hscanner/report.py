@@ -300,14 +300,20 @@ def _report_file_payload(file: ReportFile) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def counts_as_scanned(outcome: str | None, upload_status: str | None) -> bool:
+    """The single definition of "scanned": a definitive engine verdict or a completed
+    upload analysis. A hash lookup that came back "not found" is *needs attention*, not
+    scanned. Shared by the report summary and the live progress snapshot."""
+    return (
+        outcome in {ScanOutcome.INFECTED.value, ScanOutcome.NO_DETECTIONS.value}
+        or upload_status == UploadStatus.ANALYSIS_COMPLETE.value
+    )
+
+
 def compute_summary(files: tuple[ReportFile, ...], metrics: RequestMetrics) -> ReportSummary:
     return ReportSummary(
         inventoried=len(files),
-        scanned=sum(
-            file.outcome in {ScanOutcome.INFECTED.value, ScanOutcome.NO_DETECTIONS.value}
-            or file.upload_status == UploadStatus.ANALYSIS_COMPLETE.value
-            for file in files
-        ),
+        scanned=sum(counts_as_scanned(file.outcome, file.upload_status) for file in files),
         infected=sum(file.outcome == ScanOutcome.INFECTED.value for file in files),
         needs_attention=sum(
             file.outcome == ScanOutcome.NEEDS_ATTENTION.value for file in files

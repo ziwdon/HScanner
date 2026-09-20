@@ -9,6 +9,7 @@ from statistics import mean
 
 from hscanner.models import ScanStatus
 from hscanner.progress import EventType, ScanController, ScanProgressEvent
+from hscanner.report import counts_as_scanned
 
 _WARMUP = 3
 _RECENT_WINDOW = 10
@@ -76,7 +77,7 @@ class JobSnapshot:
                 self._file_start = None
             self.processed += 1
             if event.outcome is not None:
-                if event.lookup_status != "not_checked":
+                if counts_as_scanned(event.outcome, event.upload_status):
                     self.scanned += 1
                 if event.upload_status in (
                     "uploaded", "analysis_complete", "analysis_failed"

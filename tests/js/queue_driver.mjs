@@ -46,6 +46,8 @@ const emit = (label) => {
     count: doc.getElementById('upload-progress-count').textContent,
     bar: doc.getElementById('upload-progress-bar').style.width || '0%',
     detail: doc.getElementById('upload-progress-detail').textContent,
+    header: doc.querySelector('.report-head-copy .sub').textContent,
+    tile_scanned: doc.querySelector('.tile[data-summary-key="scanned"] .v').textContent,
   };
   console.log(JSON.stringify(rec));
   return rec;

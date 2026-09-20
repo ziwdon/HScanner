@@ -6,7 +6,7 @@
   <div class="report-head-copy">
     <p class="eyebrow">Triage report</p>
     <div class="path">{{ view.folder }}</div>
-    <div class="sub">{{ view.total }} files inventoried · {{ view.scanned }} scanned with {{ view.engine_name }}</div>
+    <div class="sub">{{ view.total }} files inventoried · <span data-summary-text="scanned">{{ view.scanned }}</span> scanned with {{ view.engine_name }}</div>
     {% if view.engine_breakdown %}
     <div class="sub">Engine breakdown · {% for engine_id, count in view.engine_breakdown.items() %}{{ engine_id }}: {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</div>
     {% endif %}
@@ -208,6 +208,9 @@ function updateSummaryTiles(summary) {
   Object.entries(summary).forEach(([key, value]) => {
     const tile = document.querySelector(`.tile[data-summary-key="${key}"] .v`);
     if (tile) tile.textContent = value;
+    document.querySelectorAll(`[data-summary-text="${key}"]`).forEach((el) => {
+      el.textContent = value;
+    });
   });
 }
 
