@@ -562,6 +562,7 @@ document.addEventListener('click', (event) => {
   const button = event.target.closest('.btn-scan');
   if (!button) return;
   const index = button.dataset.index;
+  if (perFileQueueActiveIndex === String(index)) return;
   if (perFileQueue.some((item) => item.index === index)) return;
   const path = filePath(index) || `file ${index}`;
   const statusEl = document.querySelector(`.scan-status[data-index="${index}"]`);
@@ -619,6 +620,7 @@ document.addEventListener('click', async (event) => {
 });
 cancelUpload.addEventListener('click', async () => {
   if (perFileQueue.length > 0 || perFileQueueRunning) {
+    perFileQueueTotal -= perFileQueue.length;
     perFileQueue = [];
     setUploadProgress(
       perFileQueueDone,
@@ -661,44 +663,49 @@ async function reconnectPerFileScans() {
   if (!response.ok) return;
   const body = await responseJson(response);
   if (!body.active || !body.jobs) return;
-  body.jobs.forEach((job) => {
-    const index = String(job.index);
-    // The click queue may already own this job (a click landed before this probe
-    // resolved); don't count it twice or the card would double-count and reset.
-    if (perFileQueueActiveIndex === index || perFileQueue.some((item) => String(item.index) === index)) {
-      return;
+  // If the click queue already has a running head (a click landed before this
+  // probe resolved), it owns the card; adopting a second head would double-count
+  // that click's job and reset the counters mid-queue.
+  if (perFileQueueRunning) return;
+  const owned = new Set(perFileQueue.map((item) => String(item.index)));
+  const job = body.jobs.find((candidate) => !owned.has(String(candidate.index)));
+  if (!job) return;
+  // The queue model has a single running head, so only the first foreign job is
+  // tracked; any further server-side jobs (e.g. from another tab) are not shown.
+  const index = String(job.index);
+  const path = filePath(index) || `file ${job.index}`;
+  // Treat the server-side in-flight job as the running head of the same queue
+  // model the click path uses, so files queued after reconnect are counted.
+  perFileQueueRunning = true;
+  perFileQueueActiveIndex = index;
+  enqueuePerFile();
+  renderPerFileQueue(`${path} · ${job.state || 'running'}`);
+  const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
+  let finished = false;
+  const finishOnce = () => {
+    if (finished) return;
+    finished = true;
+    es.close();
+    finishPerFileItem();
+  };
+  es.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.state === 'done') {
+      applyFileUpdate(data);
+      updateSummaryTiles(data.summary);
+      perFileQueueDetail = `${path} · completed`;
+      finishOnce();
+    } else if (data.state === 'error') {
+      renderPerFileQueue(`${path} · ${data.error || 'Scan failed'}`);
+      finishOnce();
+    } else {
+      renderPerFileQueue(`${path} · ${data.state}`);
     }
-    const path = filePath(index) || `file ${job.index}`;
-    const statusEl = document.querySelector(`.scan-status[data-index="${job.index}"]`);
-    // Treat the server-side in-flight job as the running head of the same queue
-    // model the click path uses, so files queued after reconnect are counted.
-    perFileQueueRunning = true;
-    perFileQueueActiveIndex = index;
-    enqueuePerFile();
-    renderPerFileQueue(`${path} · ${job.state || 'running'}`);
-    const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
-    es.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.state === 'done') {
-        applyFileUpdate(data);
-        updateSummaryTiles(data.summary);
-        perFileQueueDetail = `${path} · completed`;
-        es.close();
-        finishPerFileItem();
-      } else if (data.state === 'error') {
-        renderPerFileQueue(`${path} · ${data.error || 'Scan failed'}`);
-        es.close();
-        finishPerFileItem();
-      } else {
-        renderPerFileQueue(`${path} · ${data.state}`);
-      }
-    };
-    es.onerror = () => {
-      renderPerFileQueue(`${path} · connection lost`);
-      es.close();
-      finishPerFileItem();
-    };
-  });
+  };
+  es.onerror = () => {
+    renderPerFileQueue(`${path} · connection lost`);
+    finishOnce();
+  };
 }
 
 reconnectActiveBatch();

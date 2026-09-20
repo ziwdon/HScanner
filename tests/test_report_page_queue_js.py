@@ -149,7 +149,14 @@ class _LiveServer:
             self._thread.join(10)
 
 
-def _drive(server: _LiveServer, *, clicks: int, pre_wait_ms: int) -> list[dict]:
+def _drive(
+    server: _LiveServer,
+    *,
+    clicks: int,
+    pre_wait_ms: int,
+    start: int = 0,
+    cancel_after_ms: int = 0,
+) -> list[dict]:
     env = {
         **os.environ,
         "BASE": server.base,
@@ -157,6 +164,8 @@ def _drive(server: _LiveServer, *, clicks: int, pre_wait_ms: int) -> list[dict]:
         "CLICKS": str(clicks),
         "GAP_MS": "150",
         "PRE_WAIT_MS": str(pre_wait_ms),
+        "START": str(start),
+        "CANCEL_AFTER_MS": str(cancel_after_ms),
     }
     proc = subprocess.run(
         [NODE, str(DRIVER)], cwd=JS_DIR, env=env, capture_output=True, text=True, timeout=120
@@ -176,6 +185,25 @@ def _make_folder(tmp_path: Path, n: int = 4) -> Path:
 def _counts(rec: dict) -> tuple[int, int]:
     done, total = rec["count"].split(" / ")
     return int(done), int(total)
+
+
+def _assert_monotone(records: list[dict], max_total: int) -> None:
+    """The card must never read done > total, pos > total, or total > the files queued."""
+    for rec in records:
+        if rec["hidden"]:
+            continue
+        done, total = _counts(rec)
+        assert done <= total, rec
+        assert total <= max_total, rec
+        pos = re.search(r"\((\d+) of (\d+)\)", rec["title"])
+        if pos:
+            assert int(pos.group(1)) <= int(pos.group(2)), rec
+
+
+def _start_server_job(server: _LiveServer, index: int) -> None:
+    """Start a per-file scan server-side (as another tab would) before the page loads."""
+    response = httpx.post(f"{server.base}/reports/{server.report_id}/files/{index}/scan")
+    assert response.status_code == 202, response.text
 
 
 @pytest.fixture
@@ -228,3 +256,63 @@ def test_queue_survives_reconnect_probe_racing_first_click(tmp_path, state_home)
         done, total = _counts(rec)
         assert done <= total, rec
         assert total <= clicks, rec
+
+
+def test_reconnected_job_is_head_of_the_same_queue(tmp_path, state_home) -> None:
+    """Issue #11 (reconnect): a server-side in-flight job found on page load is the running
+    head of the click queue, so files queued afterwards extend the same (k of N) count."""
+    clicks = 2
+    with _LiveServer(_make_folder(tmp_path)) as server:
+        _start_server_job(server, 0)
+        records = _drive(server, clicks=clicks, pre_wait_ms=400, start=1)
+
+    by_label = {r["label"]: r for r in records}
+    before = by_label["before"]
+    assert before["title"] == "Per-file upload queue (1 of 1)", before
+    assert before["count"] == "0 / 1", before
+    assert before["detail"].startswith("a1.py"), before
+    for i in range(clicks):
+        # The head may finish between clicks, so only the total is asserted here.
+        rec = by_label[f"click:{i}"]
+        assert _counts(rec)[1] == i + 2, rec
+        assert rec["title"].endswith(f"of {i + 2})"), rec
+
+    final = by_label["final"]
+    assert final["detail"] == "Queue complete."
+    assert final["count"] == f"{clicks + 1} / {clicks + 1}"
+    _assert_monotone(records, clicks + 1)
+
+
+def test_click_racing_probe_with_preexisting_job_does_not_wedge_card(tmp_path, state_home) -> None:
+    """Issue #11 (reconnect race): with a server job already running, a click that lands before
+    ``/files/scan/active`` resolves makes the probe report two jobs; the page must not count
+    the click's own job twice, reset mid-queue, or get stuck without "Queue complete."."""
+    clicks = 2
+    with _LiveServer(_make_folder(tmp_path)) as server:
+        _start_server_job(server, 0)
+        records = _drive(server, clicks=clicks, pre_wait_ms=0, start=1)
+
+    final = records[-1]
+    assert final["detail"] == "Queue complete.", final
+    done, total = _counts(final)
+    assert done == total, final
+    assert clicks <= total <= clicks + 1, final
+    _assert_monotone(records, clicks + 1)
+
+
+def test_cancel_drops_pending_files_from_the_total(tmp_path, state_home) -> None:
+    """Cancelling mid-queue discards the pending files, so the card ends at "k / k" for the
+    k files that actually ran — not "k / N · Queue complete." at a partial fraction."""
+    clicks = 4
+    with _LiveServer(_make_folder(tmp_path)) as server:
+        # Clicks span ~0.5 s; cancel lands while file 1 (0.8 s scan) is still in flight
+        # or has just finished — either way at least one pending file is discarded.
+        records = _drive(server, clicks=clicks, pre_wait_ms=400, cancel_after_ms=1)
+
+    by_label = {r["label"]: r for r in records}
+    final = by_label["final"]
+    assert final["detail"] == "Queue complete.", final
+    done, total = _counts(final)
+    assert done == total, final
+    assert 1 <= total < clicks, final
+    assert final["bar"] == "100%", final

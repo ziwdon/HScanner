@@ -7,6 +7,27 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Issue #11: per-file queue card total frozen at 1 — FIXED (2026-09-20).**
+>
+> **Symptom:** clicking "Scan this file" on several files scanned them all, but the progress
+> card read "(2 of 1)", "(4 of 1)", "4 / 1 Queue complete" with the bar past 100 %.
+> **Root cause (`report.html` JS):** `perFileQueueTotal` was computed once when the first item
+> was dequeued and never updated by later enqueues; `reconnectPerFileScans()` had a separate
+> hard-coded "(1 of 1)" path that reset the shared counters on its own `done`.
+> **Fix:** every enqueue increments the total and re-renders via `renderPerFileQueue()`;
+> counters reset only when the queue drains; the reconnect path registers the server-side
+> in-flight job as the running head of the same queue and skips a job the click queue already
+> owns (at most one head is adopted; a click racing the probe keeps ownership). Cancel drops
+> pending files from the total. Queue persistence across refresh is **#13** (not addressed).
+> **New test convention — report-page JS:** `tests/test_report_page_queue_js.py` serves
+> `create_app()` under uvicorn in a thread with a slow fake engine and drives the real page in
+> jsdom via `tests/js/queue_driver.mjs` (node subprocess). It **skips** unless `node` and the
+> deps in `tests/js/package.json` are installed: `npm --prefix tests/js install`
+> (`tests/js/node_modules/` is gitignored; the repo's `*.json` ignore is negated for
+> `tests/js/package.json` + lockfile). Reuse this harness for future `report.html` JS bugs.
+> **Verification:** 721 passing tests (with node deps installed; the 5 jsdom tests skip otherwise);
+> Ruff clean; `git diff --check` clean.
+
 > **Issue #10: complete extension → tier table; metadata never raises the tier — FIXED (2026-09-20).**
 >
 > **Symptom:** unknown-extension files were promoted to **HIGH** purely by metadata — any file
