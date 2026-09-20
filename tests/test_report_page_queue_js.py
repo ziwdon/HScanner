@@ -1,0 +1,230 @@
+"""
+Regression tests for the report page's per-file scan queue *display* (issue #11).
+
+The queue lives in inline JS in ``report.html``; there is no JS test runner, so
+these tests serve ``create_app()`` under uvicorn with a slow fake engine and drive
+the real page in jsdom via ``tests/js/queue_driver.mjs``. They skip unless ``node``
+and the jsdom/eventsource deps are available (``npm --prefix tests/js install``).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+import uvicorn
+from httpx import ASGITransport
+
+from hscanner.engines.base import EngineFileReport, EngineInfo
+from hscanner.web.app import create_app
+
+JS_DIR = Path(__file__).parent / "js"
+DRIVER = JS_DIR / "queue_driver.mjs"
+NODE = shutil.which("node")
+
+
+def _js_deps_available() -> bool:
+    if NODE is None:
+        return False
+    probe = subprocess.run(
+        [NODE, "--input-type=module", "-e", "await import('jsdom'); await import('eventsource');"],
+        cwd=JS_DIR,
+        capture_output=True,
+        timeout=30,
+    )
+    return probe.returncode == 0
+
+
+pytestmark = pytest.mark.skipif(
+    not _js_deps_available(),
+    reason="node + jsdom/eventsource required (npm --prefix tests/js install)",
+)
+
+
+class _FakeKeyring:
+    def get_password(self, service, username):
+        return "fake-key"
+
+    def set_password(self, *a):
+        pass
+
+    def delete_password(self, *a):
+        pass
+
+
+_BENIGN = EngineFileReport(
+    engine_stats={"malicious": 0, "undetected": 60},
+    assessment_complete=True,
+    raw={"data": {"attributes": {"last_analysis_stats": {"malicious": 0, "undetected": 60}}}},
+)
+
+SCAN_SECONDS = 0.8
+
+
+class _SlowNotFoundEngine:
+    """Every hash is unknown; upload + analysis take ~SCAN_SECONDS so clicks can pile up."""
+
+    def __init__(self, engine_id: str, api_key: str) -> None:
+        self.info = EngineInfo(
+            id=engine_id, display_name=engine_id.title(), default_per_minute=1000
+        )
+
+    async def get_file_report(self, sha256):
+        return None
+
+    async def upload_file(self, path):
+        await asyncio.sleep(SCAN_SECONDS / 2)
+        return "analysis-" + Path(path).name
+
+    async def wait_for_analysis(self, analysis_id, sha256):
+        await asyncio.sleep(SCAN_SECONDS / 2)
+        return _BENIGN
+
+    def metrics_snapshot(self):
+        from hscanner.budget import RequestMetrics
+
+        return RequestMetrics.zero()
+
+    async def close(self):
+        return None
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class _LiveServer:
+    """Runs create_app() under uvicorn in a thread; pre-scans ``folder`` on startup."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.port = _free_port()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.report_id: str | None = None
+        self._ready = threading.Event()
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+
+    async def _main(self) -> None:
+        app = create_app(keyring_module=_FakeKeyring(), engine_factory=_SlowNotFoundEngine)
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+            page = await ac.post("/scan", data={"folder": str(self.folder), "engine": "virustotal"})
+            job_id = re.search(r'data-job-id="([^"]+)"', page.text).group(1)
+            job = app.state.job_manager.get(job_id)
+            await job.task
+            self.report_id = job.report_id
+        config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning")
+        self._server = uvicorn.Server(config)
+        self._ready.set()
+        await self._server.serve()
+
+    def __enter__(self) -> _LiveServer:
+        self._thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
+        self._thread.start()
+        assert self._ready.wait(30), "server did not start"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                httpx.get(f"{self.base}/reports/{self.report_id}", timeout=1).raise_for_status()
+                return self
+            except (httpx.HTTPError, OSError):
+                time.sleep(0.05)
+        raise AssertionError("server never answered")
+
+    def __exit__(self, *exc) -> None:
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._thread is not None:
+            self._thread.join(10)
+
+
+def _drive(server: _LiveServer, *, clicks: int, pre_wait_ms: int) -> list[dict]:
+    env = {
+        **os.environ,
+        "BASE": server.base,
+        "REPORT_ID": server.report_id,
+        "CLICKS": str(clicks),
+        "GAP_MS": "150",
+        "PRE_WAIT_MS": str(pre_wait_ms),
+    }
+    proc = subprocess.run(
+        [NODE, str(DRIVER)], cwd=JS_DIR, env=env, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+
+
+def _make_folder(tmp_path: Path, n: int = 4) -> Path:
+    folder = tmp_path / "root"
+    folder.mkdir()
+    for i in range(1, n + 1):
+        (folder / f"a{i}.py").write_text(f"print({i}, {time.time_ns()})\n", encoding="utf-8")
+    return folder
+
+
+def _counts(rec: dict) -> tuple[int, int]:
+    done, total = rec["count"].split(" / ")
+    return int(done), int(total)
+
+
+@pytest.fixture
+def state_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
+def test_queue_total_grows_with_each_click(tmp_path, state_home) -> None:
+    """Issue #11: the card must show (1 of N) / 0 / N after N clicks, and end at N / N."""
+    clicks = 3
+    with _LiveServer(_make_folder(tmp_path)) as server:
+        # Let reconnectPerFileScans() resolve first so this test isolates the click path.
+        records = _drive(server, clicks=clicks, pre_wait_ms=400)
+
+    by_label = {r["label"]: r for r in records}
+    for i in range(clicks):
+        rec = by_label[f"click:{i}"]
+        assert rec["title"] == f"Per-file upload queue (1 of {i + 1})", rec
+        assert rec["count"] == f"0 / {i + 1}", rec
+        assert rec["detail"].startswith("a1.py"), rec
+
+    final = by_label["final"]
+    assert final["detail"] == "Queue complete."
+    assert final["count"] == f"{clicks} / {clicks}"
+    assert final["bar"] == "100%"
+
+    for rec in records:
+        if rec["hidden"]:
+            continue
+        done, total = _counts(rec)
+        assert done <= total, rec
+        pos = re.search(r"\((\d+) of (\d+)\)", rec["title"])
+        if pos:
+            assert int(pos.group(1)) <= int(pos.group(2)), rec
+
+
+def test_queue_survives_reconnect_probe_racing_first_click(tmp_path, state_home) -> None:
+    """Issue #11 (secondary): a click that lands before ``/files/scan/active`` resolves must
+    not let the reconnect path reset or double-count the queue."""
+    clicks = 3
+    with _LiveServer(_make_folder(tmp_path)) as server:
+        records = _drive(server, clicks=clicks, pre_wait_ms=0)
+
+    final = records[-1]
+    assert final["detail"] == "Queue complete."
+    assert final["count"] == f"{clicks} / {clicks}"
+    for rec in records:
+        if rec["hidden"]:
+            continue
+        done, total = _counts(rec)
+        assert done <= total, rec
+        assert total <= clicks, rec

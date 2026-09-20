@@ -182,6 +182,8 @@ let perFileQueue = [];
 let perFileQueueRunning = false;
 let perFileQueueDone = 0;
 let perFileQueueTotal = 0;
+let perFileQueueActiveIndex = null;
+let perFileQueueDetail = '';
 
 function filePath(index) {
   return FILE_PATHS[String(index)] || null;
@@ -484,6 +486,34 @@ async function scanFile(index, statusEl, hooks = {}) {
   }
 }
 
+// Re-render the per-file queue card from the shared counters. The title's
+// position is the item being worked on (done + 1), capped at the total so it
+// never reads "(N+1 of N)" between the last completion and "Queue complete".
+function renderPerFileQueue(detail) {
+  if (detail !== undefined) perFileQueueDetail = detail;
+  const pos = Math.min(perFileQueueDone + 1, perFileQueueTotal);
+  setUploadProgress(
+    perFileQueueDone,
+    perFileQueueTotal,
+    perFileQueueDetail,
+    `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
+  );
+}
+
+// Every enqueue (click or reconnect) grows the total; the counters reset only
+// once the queue drains, so items added mid-queue are counted immediately.
+function enqueuePerFile() {
+  perFileQueueTotal += 1;
+  if (perFileQueueRunning) renderPerFileQueue();
+}
+
+function finishPerFileItem() {
+  perFileQueueDone += 1;
+  perFileQueueRunning = false;
+  perFileQueueActiveIndex = null;
+  drainPerFileQueue();
+}
+
 function drainPerFileQueue() {
   if (perFileQueueRunning) return;
   if (perFileQueue.length === 0) {
@@ -501,49 +531,23 @@ function drainPerFileQueue() {
   }
   const item = perFileQueue.shift();
   perFileQueueRunning = true;
-  if (perFileQueueTotal === 0) {
-    perFileQueueTotal = perFileQueue.length + 1;
-    perFileQueueDone = 0;
-  }
+  perFileQueueActiveIndex = String(item.index);
   runQueuedScan(item);
 }
 
 function runQueuedScan(item) {
   const {index, button, statusEl, path} = item;
-  const pos = perFileQueueDone + 1;
-  setUploadProgress(
-    perFileQueueDone,
-    perFileQueueTotal,
-    `${path} · queued`,
-    `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
-  );
+  renderPerFileQueue(`${path} · queued`);
   scanFile(index, statusEl, {
-    onState: (state) => setUploadProgress(
-      perFileQueueDone,
-      perFileQueueTotal,
-      `${path} · ${state}`,
-      `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
-    ),
-    onError: (reason) => setUploadProgress(
-      perFileQueueDone,
-      perFileQueueTotal,
-      `${path} · ${reason}`,
-      `Per-file upload queue (${pos} of ${perFileQueueTotal})`,
-    ),
+    onState: (state) => renderPerFileQueue(`${path} · ${state}`),
+    onError: (reason) => renderPerFileQueue(`${path} · ${reason}`),
   }).then((result) => {
-    perFileQueueDone += 1;
     if (result === 'done') {
-      setUploadProgress(
-        perFileQueueDone,
-        perFileQueueTotal,
-        `${path} · completed`,
-        `Per-file upload queue (${perFileQueueDone} of ${perFileQueueTotal})`,
-      );
+      perFileQueueDetail = `${path} · completed`;
     } else {
       button.disabled = false;
     }
-    perFileQueueRunning = false;
-    drainPerFileQueue();
+    finishPerFileItem();
   });
 }
 
@@ -564,6 +568,7 @@ document.addEventListener('click', (event) => {
   button.disabled = true;
   if (statusEl) statusEl.textContent = 'queued…';
   perFileQueue.push({index, button, statusEl, path});
+  enqueuePerFile();
   drainPerFileQueue();
 });
 
@@ -657,34 +662,41 @@ async function reconnectPerFileScans() {
   const body = await responseJson(response);
   if (!body.active || !body.jobs) return;
   body.jobs.forEach((job) => {
-    const path = filePath(String(job.index)) || `file ${job.index}`;
+    const index = String(job.index);
+    // The click queue may already own this job (a click landed before this probe
+    // resolved); don't count it twice or the card would double-count and reset.
+    if (perFileQueueActiveIndex === index || perFileQueue.some((item) => String(item.index) === index)) {
+      return;
+    }
+    const path = filePath(index) || `file ${job.index}`;
     const statusEl = document.querySelector(`.scan-status[data-index="${job.index}"]`);
-    perFileQueueTotal = 1;
-    perFileQueueDone = 0;
-    setUploadProgress(0, 1, `${path} · ${job.state || 'running'}`, 'Per-file upload queue (1 of 1)');
+    // Treat the server-side in-flight job as the running head of the same queue
+    // model the click path uses, so files queued after reconnect are counted.
+    perFileQueueRunning = true;
+    perFileQueueActiveIndex = index;
+    enqueuePerFile();
+    renderPerFileQueue(`${path} · ${job.state || 'running'}`);
     const es = new EventSource(`/reports/${REPORT_ID}/files/${job.index}/scan/events`);
     es.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.state === 'done') {
         applyFileUpdate(data);
         updateSummaryTiles(data.summary);
-        setUploadProgress(1, 1, `${path} · completed`, 'Per-file upload queue (1 of 1)');
-        perFileQueueTotal = 0;
-        perFileQueueDone = 0;
+        perFileQueueDetail = `${path} · completed`;
         es.close();
+        finishPerFileItem();
       } else if (data.state === 'error') {
-        setUploadProgress(0, 1, `${path} · ${data.error || 'Scan failed'}`, 'Per-file upload queue (1 of 1)');
-        perFileQueueTotal = 0;
-        perFileQueueDone = 0;
+        renderPerFileQueue(`${path} · ${data.error || 'Scan failed'}`);
         es.close();
+        finishPerFileItem();
       } else {
-        setUploadProgress(0, 1, `${path} · ${data.state}`, 'Per-file upload queue (1 of 1)');
+        renderPerFileQueue(`${path} · ${data.state}`);
       }
     };
     es.onerror = () => {
-      perFileQueueTotal = 0;
-      perFileQueueDone = 0;
+      renderPerFileQueue(`${path} · connection lost`);
       es.close();
+      finishPerFileItem();
     };
   });
 }

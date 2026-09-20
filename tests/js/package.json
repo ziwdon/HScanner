@@ -1,0 +1,10 @@
+{
+  "name": "hscanner-report-page-js-tests",
+  "private": true,
+  "type": "module",
+  "description": "Node deps for tests/test_report_page_queue_js.py (jsdom driver for report.html). Install with: npm --prefix tests/js install",
+  "devDependencies": {
+    "eventsource": "^4.0.0",
+    "jsdom": "^26.0.0"
+  }
+}
