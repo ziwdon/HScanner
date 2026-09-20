@@ -7,6 +7,33 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Issue #14: Needs-attention live updates overrode the pill filter; empty "Lower risk 0"
+> group; stale auto-open key; capped-subgroup counts — FIXED (2026-09-20).**
+>
+> **Symptoms (`report.html`):** with the High pill pressed, a Medium file's scan result
+> un-hid the Medium group; "Lower risk 0" rendered visibly on load (always empty with the
+> default bypass); a group created live never auto-opened (checked `groupKey === 'priority'`);
+> a subgroup over the 500-row cap dropped its badge from 502 to 499 after one file left
+> (DOM-card count ignored unrendered rows) and its "Showing first 500 of 502" note never moved.
+> **Fix — convention: `applyGroupVisibility(section)` is the only writer of tier-group
+> `hidden`** (pressed pill must match **and** the group must be non-empty); the pill handler
+> and `updateGroupCounts()` both call it. **All live counts come from `groupTotal(el)`** =
+> rendered cards + `data-unrendered` (rows the cap left out; template attribute on capped
+> groups/subgroups), recursive over subgroups; `updateCapNote()` rewrites the note;
+> `updateSectionCount()` sums group totals. Any new live-update surface must call
+> `updateGroupCounts()` rather than touching `hidden`/counts directly. The template renders
+> empty tier groups with `hidden` (all three tiers stay in the DOM — JS contract unchanged)
+> and keeps `open` on High independently of `hidden`, so an empty High group filled live
+> opens. Known limit: a batch scan over an *unrendered* file cannot decrement its old
+> group's `data-unrendered`; batch `done` reloads the page, cancel/error may leave that
+> count stale by those files.
+> **Tests:** `tests/test_issue14_needs_attention_live_updates.py` + `tests/js/groups_driver.mjs`
+> (snapshots groups/pills/chips of the Needs-attention section; reuse for group/filter bugs).
+> `_LiveServer(folder, engine_factory=...)` now takes the fake engine. The auto-open tests
+> use an engine that fails the first lookup of chosen SHAs so an Errors file's rescan lands
+> in Needs attention live.
+> **Verification:** 745 passing tests (node deps installed); Ruff clean; `git diff --check` clean.
+
 > **Issue #13: per-file scan queue lost on page refresh — FIXED (2026-09-20).**
 >
 > **Symptom:** clicking "Scan this file" on several files then refreshing re-adopted only the

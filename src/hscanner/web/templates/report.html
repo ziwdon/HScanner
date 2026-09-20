@@ -82,11 +82,11 @@
       {% endif %}
       {% if section.groups %}
       {% for group in section.groups %}
-      <details class="group" data-group="{{ group.key }}"{% if section.outcome == 'needs_attention' and group.key == 'high' %} open{% endif %}>
+      <details class="group" data-group="{{ group.key }}"{% if group.hidden %} data-unrendered="{{ group.hidden }}"{% endif %}{% if group.total == 0 %} hidden{% endif %}{% if section.outcome == 'needs_attention' and group.key == 'high' %} open{% endif %}>
         <summary class="group-head"><span class="caret" aria-hidden="true">▸</span> {{ group.title }} <span class="count">{{ group.total }}</span></summary>
         {% if group.subgroups %}
         {% for subgroup in group.subgroups %}
-        <details class="group subgroup" data-subgroup="{{ subgroup.key }}">
+        <details class="group subgroup" data-subgroup="{{ subgroup.key }}"{% if subgroup.hidden %} data-unrendered="{{ subgroup.hidden }}"{% endif %}>
           <summary class="group-head">{{ subgroup.title }} <span class="count">{{ subgroup.total }}</span></summary>
           {% for f in subgroup.files %}{% include "_file_card.html" %}{% endfor %}
           {% if subgroup.hidden %}
@@ -138,10 +138,7 @@ document.querySelectorAll('.filter-pills').forEach((pills) => {
     chips.forEach((c) => {
       c.setAttribute('aria-pressed', String(c.dataset.filter === key && key !== 'all'));
     });
-    section.querySelectorAll(':scope > details.group').forEach((g) => {
-      const matches = key === 'all' || g.dataset.group === key;
-      g.hidden = !matches;
-    });
+    applyGroupVisibility(section);
     const scanAllBtn = section.querySelector('.btn-scan-all');
     if (scanAllBtn) {
       scanAllBtn.dataset.target = key;
@@ -214,10 +211,50 @@ function updateSummaryTiles(summary) {
   });
 }
 
+// Live totals count rendered cards plus the rows the ≤500 cap left unrendered
+// (data-unrendered), so a capped group never under-counts after an update.
+// data-unrendered is exact only for files that never had a card: a batch scan
+// that processes an unrendered file cannot decrement its old group (the page
+// reloads on batch "done"; cancel/error may leave that count stale by those files).
+function groupTotal(group) {
+  let total = group.querySelectorAll(':scope > details.file').length
+    + (parseInt(group.dataset.unrendered, 10) || 0);
+  group.querySelectorAll(':scope > details.group.subgroup').forEach((subgroup) => {
+    total += groupTotal(subgroup);
+  });
+  return total;
+}
+
+function updateCapNote(group) {
+  const note = group.querySelector(':scope > .note');
+  if (!note) return;
+  const shown = group.querySelectorAll(':scope > details.file').length;
+  note.textContent = `Showing first ${shown} of ${groupTotal(group)} in this group. Use JSON or CSV for the complete list.`;
+}
+
+function pressedFilter(section) {
+  const pill = section.querySelector('.filter-pill[aria-pressed="true"]');
+  return pill ? pill.dataset.filter : 'all';
+}
+
+// The only writer of tier-group visibility: a group shows when the pressed pill
+// matches it (or "All") and it has files. Both the pill handler and live updates
+// go through here, so a scan result never un-hides a filtered-out group.
+function applyGroupVisibility(section) {
+  const key = pressedFilter(section);
+  section.querySelectorAll(':scope > details.group').forEach((group) => {
+    const matches = key === 'all' || group.dataset.group === key;
+    group.hidden = !matches || groupTotal(group) === 0;
+  });
+}
+
 function updateSectionCount(section) {
   if (!section) return;
   const count = section.querySelector(':scope > .section-head .count');
-  const total = section.querySelectorAll('details.file').length;
+  const groups = section.querySelectorAll(':scope > details.group');
+  const total = groups.length
+    ? Array.from(groups).reduce((sum, group) => sum + groupTotal(group), 0)
+    : section.querySelectorAll('details.file').length;
   if (count) count.textContent = total;
   const navLink = document.querySelector(`.report-nav a[href="#${section.id}"] b`);
   if (navLink) navLink.textContent = total;
@@ -232,21 +269,22 @@ function updateSectionCount(section) {
 function updateGroupCounts(section) {
   if (!section) return;
   section.querySelectorAll(':scope > details.group').forEach((group) => {
-    const groupFiles = group.querySelectorAll('details.file').length;
     const groupCount = group.querySelector(':scope > .group-head .count');
-    if (groupCount) groupCount.textContent = groupFiles;
+    if (groupCount) groupCount.textContent = groupTotal(group);
+    updateCapNote(group);
     group.querySelectorAll(':scope > details.group.subgroup').forEach((subgroup) => {
-      const subgroupFiles = subgroup.querySelectorAll('details.file').length;
+      const subgroupFiles = groupTotal(subgroup);
       const subgroupCount = subgroup.querySelector(':scope > .group-head .count');
       if (subgroupCount) subgroupCount.textContent = subgroupFiles;
+      updateCapNote(subgroup);
       subgroup.hidden = subgroupFiles === 0;
     });
-    group.hidden = groupFiles === 0;
   });
+  applyGroupVisibility(section);
   section.querySelectorAll('.risk-chip').forEach((chip) => {
     const key = chip.dataset.filter;
     const group = section.querySelector(`:scope > details.group[data-group="${CSS.escape(key)}"]`);
-    const count = group ? group.querySelectorAll('details.file').length : 0;
+    const count = group ? groupTotal(group) : 0;
     const countEl = chip.querySelector('b');
     if (countEl) countEl.textContent = count;
   });
@@ -324,7 +362,7 @@ function applyFileUpdate(data) {
       summary.className = 'group-head';
       summary.innerHTML = `<span class="caret" aria-hidden="true">▸</span> ${groupTitle} <span class="count">0</span>`;
       group.appendChild(summary);
-      if (data.section && data.section.outcome === 'needs_attention' && groupKey === 'priority') {
+      if (data.section && data.section.outcome === 'needs_attention' && groupKey === 'high') {
         group.open = true;
       }
       destination.appendChild(group);
@@ -348,8 +386,6 @@ function applyFileUpdate(data) {
     } else {
       group.appendChild(card);
     }
-    const groupCount = group.querySelector(':scope > .group-head .count');
-    if (groupCount) groupCount.textContent = group.querySelectorAll('details.file').length;
   } else {
     destination.appendChild(card);
   }
