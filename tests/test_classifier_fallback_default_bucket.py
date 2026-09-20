@@ -35,7 +35,7 @@ def test_explicit_default_bucket_upload_candidate_changes_fallback():
     assert c.upload_eligible is True
 
 
-def test_unrecognized_oversized_file_is_high_suspicious_blocked():
+def test_unrecognized_oversized_file_stays_low_risk_hash_only():
     policy = load_default_policy()
     size = policy["size_limits"]["large_upload_soft_block_mb"] * 1024 * 1024 + 1
     record = FileRecord(
@@ -44,5 +44,5 @@ def test_unrecognized_oversized_file_is_high_suspicious_blocked():
         is_symlink=False, is_regular=True, is_hidden=False,
     )
     c = classify_file(record, policy)
-    assert c.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
-    assert c.risk_tier == RiskTier.HIGH
+    assert c.bucket == ClassificationBucket.HASH_ONLY
+    assert c.risk_tier == RiskTier.LOW_RISK

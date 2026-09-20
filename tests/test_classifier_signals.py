@@ -35,11 +35,13 @@ def test_oversize_elf_promotes_to_upload_blocked_high():
     huge = policy["size_limits"]["absolute_upload_block_mb"] * 1024 * 1024 + 1
     rec = _record("launcher", size=huge)
     base = classify_file(rec, policy)
-    assert base.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    # Size alone never raises the tier: the unknown file starts LOW_RISK...
+    assert base.bucket == ClassificationBucket.HASH_ONLY
     promoted = reclassify_with_signals(rec, base, b"#!/bin/sh\n", policy)
-    # base is not HASH_ONLY so reclassify returns it unchanged
-    assert promoted is base
+    # ...and the shebang *content* signal promotes it to HIGH (upload blocked by size).
+    assert promoted.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
     assert promoted.risk_tier == RiskTier.HIGH
+    assert promoted.upload_eligible is False
 
 
 def test_pak_with_executable_marker_promotes_to_medium_suspicious_blocked():

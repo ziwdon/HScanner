@@ -114,6 +114,9 @@ _RISK_GROUP_META = {
 }
 
 
+_FILTER_LABELS = {"high": "High", "medium": "Medium", "low_risk": "Lower risk"}
+
+
 def tier_key_for_classification(cls: Classification) -> str | None:
     """Resolve the Needs-attention tier key for a fresh Classification.
     Single source of truth consumed by both the view layer and the batch
@@ -245,6 +248,10 @@ def build_report_view(
         if outcome == "needs_attention":
             risk_groups = _group_needs_attention_by_risk(files, secondary_cap)
             section["groups"] = risk_groups
+            # Chips and pills only for tiers that actually have files. With
+            # bypass on, LOW_RISK files never reach Needs attention, so the
+            # "Lower risk" chip/pill does not render at all (issue #10).
+            populated = [g for g in risk_groups if g["total"] > 0]
             section["risk_chips"] = [
                 {
                     "key": g["key"],
@@ -254,13 +261,11 @@ def build_report_view(
                         m["sev"] for m in _RISK_GROUP_META.values() if m["key"] == g["key"]
                     ),
                 }
-                for g in risk_groups
+                for g in populated
             ]
-            section["filters"] = [
-                {"key": "all", "label": "All", "pressed": True},
-                {"key": "high", "label": "High", "pressed": False},
-                {"key": "medium", "label": "Medium", "pressed": False},
-                {"key": "low_risk", "label": "Lower risk", "pressed": False},
+            section["filters"] = [{"key": "all", "label": "All", "pressed": True}] + [
+                {"key": g["key"], "label": _FILTER_LABELS[g["key"]], "pressed": False}
+                for g in populated
             ]
         elif outcome in {"no_detections", "skipped"}:
             section["groups"] = _group_by_extension(files, secondary_cap)

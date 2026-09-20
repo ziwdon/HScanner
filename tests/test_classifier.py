@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 
 from hscanner.classifier import classify_file
@@ -87,14 +88,16 @@ def test_unknown_extension_falls_back_to_hash_only() -> None:
     assert result.suspicious is False
 
 
-def test_large_unknown_extension_is_upload_blocked() -> None:
+def test_large_unknown_extension_stays_hash_only() -> None:
+    # Size alone is not a risk signal (issue #10): an unknown type over the
+    # upload limit is hashed like any other unknown file, never promoted.
     size = 300 * 1024 * 1024
     result = classify_file(record("sample.xyz", size=size), load_default_policy())
 
-    assert result.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    assert result.bucket == ClassificationBucket.HASH_ONLY
     assert result.upload_eligible is False
     assert result.hash_eligible is True
-    assert result.suspicious is True
+    assert result.suspicious is False
 
 
 def test_large_upload_candidate_is_upload_blocked() -> None:
@@ -107,8 +110,14 @@ def test_large_upload_candidate_is_upload_blocked() -> None:
     assert result.suspicious is True
 
 
-def test_executable_bit_is_upload_candidate() -> None:
-    result = classify_file(record("runner", mode=0o100755), load_default_policy())
+def test_executable_bit_is_upload_candidate_only_when_policy_opts_in() -> None:
+    policy = copy.deepcopy(load_default_policy())
+    assert classify_file(record("runner", mode=0o100755), policy).bucket == (
+        ClassificationBucket.HASH_ONLY
+    )
+
+    policy["buckets"]["upload_candidate"]["executable_bit"] = True
+    result = classify_file(record("runner", mode=0o100755), policy)
 
     assert result.bucket == ClassificationBucket.UPLOAD_CANDIDATE
     assert result.upload_eligible is True

@@ -35,25 +35,98 @@ buckets:
     filename_patterns: []
     reason: "low risk"
 
+  # Extension -> risk-tier table (issue #10). Every regular file that is not
+  # sensitive/skipped resolves to exactly one tier from these three lists;
+  # unknown extensions fall back to matching.default_bucket (LOW_RISK).
+  # File *metadata* (size, exec bit) never raises the tier — only content
+  # (ELF/shebang magic, see reclassify_with_signals) may promote a file.
+
+  # LOW_RISK: data / config / markup / media / fonts / plain source text /
+  # non-macro documents / game asset blobs. Hashed and looked up (unless
+  # bypassed), never offered for upload.
   hash_only:
     extensions:
-      [".pdf", ".docx", ".xlsx", ".mp4", ".mkv", ".png", ".jpg", ".jpeg", ".ogg", ".wav",
-       ".svg", ".ttf", ".otf", ".ttc",
-       ".pak", ".vpk", ".bundle", ".asset", ".ucas", ".utoc",
-       ".json", ".xml", ".csv", ".tsv", ".yaml", ".yml", ".toml", ".ini",
+      # data / config / markup
+      [".json", ".xml", ".csv", ".tsv", ".yaml", ".yml", ".toml", ".ini",
        ".cfg", ".conf", ".lock", ".map", ".html", ".htm", ".css",
-       ".sql", ".graphql", ".proto"]
+       ".sql", ".graphql", ".proto", ".plist", ".properties",
+       ".db", ".sqlite", ".sqlite3", ".ipynb",
+       # source text (needs a compiler/transpiler; not directly runnable)
+       ".c", ".cpp", ".cc", ".h", ".hpp", ".rs", ".go", ".java", ".ts", ".tsx",
+       ".jsx", ".cs", ".swift", ".kt", ".m", ".mm", ".vue", ".scss", ".less",
+       ".pyx", ".pxd", ".pxi",
+       # non-macro documents / ebooks
+       ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".odg",
+       ".rtf", ".epub", ".mobi", ".azw", ".azw3",
+       # images
+       ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico",
+       ".svg", ".heic", ".heif", ".avif", ".psd", ".xcf", ".tga", ".dds",
+       ".ktx", ".ktx2", ".exr", ".hdr",
+       # audio / video / subtitles
+       ".mp3", ".flac", ".aac", ".m4a", ".opus", ".wma", ".ogg", ".wav",
+       ".aif", ".aiff", ".mid", ".midi",
+       ".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".m4v",
+       ".mpg", ".mpeg", ".ogv", ".srt", ".ass", ".vtt",
+       # fonts
+       ".ttf", ".otf", ".ttc", ".woff", ".woff2", ".eot",
+       # game asset blobs
+       ".pak", ".vpk", ".bundle", ".asset", ".assets", ".ress", ".resource",
+       ".unity3d", ".ucas", ".utoc", ".uasset", ".umap", ".upk",
+       ".bsa", ".ba2", ".esp", ".esm", ".esl", ".wad", ".pk3", ".pk4", ".gcf",
+       ".dat", ".win", ".gds", ".sav",
+       # ML models (non-pickle formats)
+       ".safetensors", ".gguf", ".onnx"]
     reason: "hash-only by default"
 
   upload_candidate:
+    # HIGH: the host OS shell/loader runs or loads it directly by type.
     high_extensions:
-      [".exe", ".dll", ".so", ".bin", ".appimage", ".deb", ".rpm", ".msi", ".run",
-       ".scr", ".com", ".lnk",
-       ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1", ".vbs", ".wsf"]
+      # PE / native Windows
+      [".exe", ".dll", ".sys", ".drv", ".ocx", ".cpl", ".scr", ".com", ".pif", ".efi",
+       # ELF / Mach-O native
+       ".so", ".dylib", ".elf", ".ko", ".out", ".appimage", ".run",
+       # installers / packages
+       ".msi", ".msp", ".mst", ".msix", ".msixbundle", ".appx", ".appxbundle",
+       ".deb", ".rpm", ".pkg", ".dmg", ".apk", ".ipa", ".snap", ".flatpak",
+       # shell / batch / PowerShell / Windows Script Host
+       ".sh", ".bash", ".zsh", ".ksh", ".csh", ".fish", ".command",
+       ".bat", ".cmd", ".ps1", ".psm1", ".psd1",
+       ".vbs", ".vbe", ".jse", ".wsf", ".wsh", ".wsc", ".sct", ".hta",
+       # macOS scripts
+       ".scpt", ".applescript",
+       # shortcuts / autorun / registry / MMC / launchers
+       ".lnk", ".url", ".scf", ".inf", ".reg", ".msc", ".desktop"]
+    # MEDIUM: needs an interpreter/runtime, or is a container that can carry
+    # executables.
     medium_extensions:
-      [".py", ".pyc", ".pyd", ".rpy", ".rpym", ".rpyc", ".rpymc", ".rpyb", ".rpa",
-       ".pl", ".rb", ".js", ".jar"]
-    executable_bit: true
+      # Python
+      [".py", ".pyw", ".pyc", ".pyo", ".pyd", ".pyz", ".pyzw",
+       # Ren'Py
+       ".rpy", ".rpym", ".rpyc", ".rpymc", ".rpyb", ".rpa",
+       # other interpreted
+       ".pl", ".pm", ".rb", ".rbw", ".php", ".phar", ".phtml", ".lua", ".luac",
+       ".tcl", ".awk", ".js", ".mjs", ".cjs", ".groovy", ".kts", ".ahk",
+       # JVM / .NET / WASM / Android bytecode
+       ".jar", ".war", ".ear", ".class", ".dex", ".odex", ".wasm",
+       # native object code (not directly runnable by type)
+       ".o", ".a", ".bin",
+       # archives / disk images
+       ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz",
+       ".zst", ".lz", ".lzma", ".lz4", ".z", ".cab", ".arj", ".lzh", ".cpio", ".wim",
+       ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".qcow2",
+       # browser/app extensions & language packages
+       ".xpi", ".crx", ".whl", ".egg", ".gem", ".nupkg",
+       # macro-capable Office, legacy binary Office, compiled HTML help
+       ".docm", ".dotm", ".xlsm", ".xltm", ".xlam", ".pptm", ".potm", ".ppsm",
+       ".doc", ".xls", ".ppt", ".chm",
+       # console packages / ROM containers (may contain code)
+       ".nsp", ".xci", ".nca", ".nro", ".nds", ".3ds", ".cia", ".gba",
+       # pickled Python objects (deserialization executes code)
+       ".pkl", ".pickle"]
+    # Opt-in: promote unknown-extension files with a mode exec bit to HIGH.
+    # Off by default — mode bits are a weak signal on Linux (FAT/NTFS copies
+    # are 0777 en masse); ELF/shebang content detection is the strong one.
+    executable_bit: false
     elf_magic: true
     shebang: true
     reason: "executable, package, or script"

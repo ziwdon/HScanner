@@ -100,7 +100,9 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             risk_tier=RiskTier.LOW_RISK,
         )
 
-    # Executable bit on a truly unknown extension → HIGH (worst-case).
+    # Opt-in (policy ``executable_bit: true``, off by default): a mode exec
+    # bit on a truly unknown extension promotes to HIGH. Size alone never
+    # raises the tier — it only gates upload eligibility for listed types.
     if _has_executable_bit(record, buckets["upload_candidate"]):
         return Classification(
             bucket=ClassificationBucket.UPLOAD_CANDIDATE,
@@ -109,12 +111,6 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             hash_eligible=True,
             suspicious=True,
             risk_tier=RiskTier.HIGH,
-        )
-
-    if record.size > soft_limit or record.size > absolute_limit:
-        return _suspicious_blocked(
-            "unknown file type exceeds upload size limit",
-            tier=RiskTier.HIGH,
         )
 
     default_bucket = str(policy.get("matching", {}).get("default_bucket", "hash_only")).lower()
@@ -134,6 +130,24 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
         hash_eligible=True,
         risk_tier=RiskTier.LOW_RISK,
     )
+
+
+def risk_tier_for_extension(ext: str, policy: dict[str, Any]) -> RiskTier | None:
+    """Look up an extension (with leading dot, any case) in the policy's
+    extension -> tier table. Returns ``None`` for extensions the table does
+    not know (callers apply the LOW_RISK default fallback)."""
+    ext = ext.lower()
+    buckets = policy["buckets"]
+    if ext in _normalized_extensions(buckets["skipped"].get("extensions", [])):
+        return RiskTier.SKIPPED
+    upload = buckets["upload_candidate"]
+    if ext in _normalized_extensions(upload.get("high_extensions", [])):
+        return RiskTier.HIGH
+    if ext in _normalized_extensions(upload.get("medium_extensions", [])):
+        return RiskTier.MEDIUM
+    if ext in _normalized_extensions(buckets["hash_only"].get("extensions", [])):
+        return RiskTier.LOW_RISK
+    return None
 
 
 def _suspicious_blocked(reason: str, *, tier: RiskTier) -> Classification:
