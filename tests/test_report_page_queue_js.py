@@ -107,8 +107,9 @@ def _free_port() -> int:
 class _LiveServer:
     """Runs create_app() under uvicorn in a thread; pre-scans ``folder`` on startup."""
 
-    def __init__(self, folder: Path) -> None:
+    def __init__(self, folder: Path, engine_factory=_SlowNotFoundEngine) -> None:
         self.folder = folder
+        self.engine_factory = engine_factory
         self.port = _free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         self.report_id: str | None = None
@@ -117,7 +118,7 @@ class _LiveServer:
         self._thread: threading.Thread | None = None
 
     async def _main(self) -> None:
-        app = create_app(keyring_module=_FakeKeyring(), engine_factory=_SlowNotFoundEngine)
+        app = create_app(keyring_module=_FakeKeyring(), engine_factory=self.engine_factory)
         async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
             page = await ac.post("/scan", data={"folder": str(self.folder), "engine": "virustotal"})
             job_id = re.search(r'data-job-id="([^"]+)"', page.text).group(1)
