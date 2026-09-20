@@ -513,13 +513,16 @@ def _risk_tier_from_payload(file: dict[str, Any]) -> str:
     bucket = ClassificationBucket(str(file.get("classification_bucket", "hash_only")))
     if bucket == ClassificationBucket.SKIPPED or file.get("outcome") == ScanOutcome.SKIPPED.value:
         return RiskTier.SKIPPED.value
-    if file.get("elf") or file.get("shebang"):
-        return RiskTier.HIGH.value
+    # Mirror fresh classification: a listed HIGH/MEDIUM extension keeps its
+    # table tier (content promotion only ever applies to hash_only files);
+    # otherwise ELF/shebang content wins over LOW_RISK/unknown.
     ext = PurePosixPath(str(file.get("relative_path") or "")).suffix
     tier = risk_tier_for_extension(ext, _legacy_tier_policy()) if ext else None
-    if tier is None or tier == RiskTier.SKIPPED:
-        return RiskTier.LOW_RISK.value
-    return tier.value
+    if tier in {RiskTier.HIGH, RiskTier.MEDIUM}:
+        return tier.value
+    if file.get("elf") or file.get("shebang"):
+        return RiskTier.HIGH.value
+    return RiskTier.LOW_RISK.value
 
 
 def _action_from_payload(file: dict[str, Any]) -> str:

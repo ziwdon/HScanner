@@ -100,35 +100,37 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             risk_tier=RiskTier.LOW_RISK,
         )
 
-    # Opt-in (policy ``executable_bit: true``, off by default): a mode exec
-    # bit on a truly unknown extension promotes to HIGH. Size alone never
-    # raises the tier — it only gates upload eligibility for listed types.
-    if _has_executable_bit(record, buckets["upload_candidate"]):
-        return Classification(
-            bucket=ClassificationBucket.UPLOAD_CANDIDATE,
-            reason=buckets["upload_candidate"]["reason"],
-            upload_eligible=True,
-            hash_eligible=True,
-            suspicious=True,
-            risk_tier=RiskTier.HIGH,
-        )
-
+    # Fallback upload-candidate branches (both off in the default policy):
+    #  - opt-in ``executable_bit: true``: a mode exec bit on a truly unknown
+    #    extension promotes to HIGH;
+    #  - ``matching.default_bucket: upload_candidate``.
+    # Size alone never raises the tier, but the size limits still gate
+    # upload eligibility for these fallbacks exactly as for listed types.
     default_bucket = str(policy.get("matching", {}).get("default_bucket", "hash_only")).lower()
-    if default_bucket == "upload_candidate":
+    if _has_executable_bit(record, buckets["upload_candidate"]):
+        fallback_reason = buckets["upload_candidate"]["reason"]
+    elif default_bucket == "upload_candidate":
+        fallback_reason = "default fallback upload candidate"
+    else:
         return Classification(
-            bucket=ClassificationBucket.UPLOAD_CANDIDATE,
-            reason="default fallback upload candidate",
-            upload_eligible=True,
+            bucket=ClassificationBucket.HASH_ONLY,
+            reason="default fallback hash-only",
+            upload_eligible=False,
             hash_eligible=True,
-            suspicious=True,
-            risk_tier=RiskTier.HIGH,
+            risk_tier=RiskTier.LOW_RISK,
+        )
+    if record.size > soft_limit or record.size > absolute_limit:
+        return _suspicious_blocked(
+            f"{fallback_reason}; file exceeds upload size limit",
+            tier=RiskTier.HIGH,
         )
     return Classification(
-        bucket=ClassificationBucket.HASH_ONLY,
-        reason="default fallback hash-only",
-        upload_eligible=False,
+        bucket=ClassificationBucket.UPLOAD_CANDIDATE,
+        reason=fallback_reason,
+        upload_eligible=True,
         hash_eligible=True,
-        risk_tier=RiskTier.LOW_RISK,
+        suspicious=True,
+        risk_tier=RiskTier.HIGH,
     )
 
 
@@ -215,9 +217,9 @@ def _matches_suspicious_block(
 def _rule_tier(rule: dict[str, Any]) -> RiskTier:
     # Default: MEDIUM. The default policy's only suspicious-block rule is
     # the `.pak` + executable_markers rule (treated as MEDIUM attention
-    # because the inner content is unverified). Oversized-anonymous
-    # fallbacks in classify_file set RiskTier.HIGH directly without going
-    # through this helper. Future rules wanting HIGH can set `tier: high`.
+    # because the inner content is unverified). Oversized *listed* files
+    # keep their extension tier in classify_file without going through
+    # this helper. Future rules wanting HIGH can set `tier: high`.
     tier = str(rule.get("tier", "medium")).lower()
     return RiskTier.HIGH if tier == "high" else RiskTier.MEDIUM
 

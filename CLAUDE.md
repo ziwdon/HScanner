@@ -33,11 +33,14 @@ Not an antivirus — a triage tool.
 >    eligibility; a listed HIGH/MEDIUM file over the limit is `suspicious_upload_blocked` with
 >    its own tier; an unknown file over the limit stays `hash_only`/LOW_RISK.
 >    `upload_candidate.executable_bit` defaults to **`false`**; the exec-bit rule stays as an
->    opt-in policy knob (unknown extensions only). ELF/shebang content promotion is unchanged.
+>    opt-in policy knob (unknown extensions only). Both fallback upload-candidate branches
+>    (exec-bit opt-in, `default_bucket: upload_candidate`) are size-gated like listed types.
+>    ELF/shebang content promotion is unchanged.
 >    New helper `risk_tier_for_extension(ext, policy) -> RiskTier | None`.
 > 3. `report._risk_tier_from_payload`: legacy payloads without `risk_tier` re-derive the tier
->    from the same table (skipped → SKIPPED; `elf`/`shebang` → HIGH; else extension; else
->    LOW_RISK) instead of `risk_tier_for_legacy_bucket` (which remains only as the view-layer
+>    from the same table (skipped → SKIPPED; listed HIGH/MEDIUM extension → that tier;
+>    else `elf`/`shebang` → HIGH; else LOW_RISK — mirrors fresh classification, where content
+>    promotion only applies to `hash_only` files) instead of `risk_tier_for_legacy_bucket` (which remains only as the view-layer
 >    fallback in `report_view.group_for_file_view`). Policy is loaded once (`lru_cache`).
 > 4. `report_view`: Needs-attention chips and filter pills render only for tiers that have
 >    files; with bypass on there is simply no "Lower risk" pill. `groups` still lists all three
@@ -45,7 +48,7 @@ Not an antivirus — a triage tool.
 > **Spec:** `docs/superpowers/specs/2026-06-19-vtscanner-design.md` gained a "Risk tiers and the
 > extension → tier table" subsection, tier rules, and a **Risk tier** column in the Bucket-to-report
 > mapping (local only — `docs/` is gitignored).
-> **Verification:** 713 passing tests (`tests/test_issue10_tier_table.py` is the regression
+> **Verification:** 716 passing tests (`tests/test_issue10_tier_table.py` is the regression
 > file); Ruff clean; `git diff --check` clean. Previously affected persisted reports render with
 > re-derived tiers immediately; re-scan to refresh buckets/reasons.
 

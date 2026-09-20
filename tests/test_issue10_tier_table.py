@@ -230,3 +230,36 @@ def test_filter_pills_only_include_tiers_with_files():
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
     assert [p["key"] for p in needs["filters"]] == ["all", "high", "medium"]
     assert [c["key"] for c in needs["risk_chips"]] == ["high", "medium"]
+
+
+# --- Review follow-ups ------------------------------------------------------
+
+
+def test_exec_bit_opt_in_fallback_is_still_size_gated():
+    """Size limits gate upload eligibility structurally — including the
+    opt-in exec-bit fallback branch."""
+    policy = copy.deepcopy(load_default_policy())
+    policy["buckets"]["upload_candidate"]["executable_bit"] = True
+    size = policy["size_limits"]["absolute_upload_block_mb"] * 1024 * 1024 + 1
+    c = classify_file(_record("weird.xyz", size=size, mode=0o100755), policy)
+    assert c.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    assert c.upload_eligible is False
+    assert c.risk_tier == RiskTier.HIGH
+
+
+def test_default_bucket_upload_candidate_fallback_is_still_size_gated():
+    policy = copy.deepcopy(load_default_policy())
+    policy["matching"]["default_bucket"] = "upload_candidate"
+    c = classify_file(_record("weird.xyz", size=_soft_limit_plus_one(policy)), policy)
+    assert c.bucket == ClassificationBucket.SUSPICIOUS_UPLOAD_BLOCKED
+    assert c.upload_eligible is False
+    assert c.risk_tier == RiskTier.HIGH
+
+
+def test_legacy_shebang_on_listed_medium_extension_stays_medium():
+    """Fresh scans only content-promote HASH_ONLY files, so a shebang'd .py
+    is MEDIUM; the legacy re-derivation must agree, not blanket-HIGH it."""
+    rf = _report_file_from_payload(_legacy(relative_path="runner.py", shebang=True))
+    assert rf.risk_tier == "medium"
+    rf = _report_file_from_payload(_legacy(relative_path="tool.exe", elf=True))
+    assert rf.risk_tier == "high"
