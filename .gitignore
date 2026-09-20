@@ -28,3 +28,8 @@ docs/
 *.pfx
 *.crt
 *.csr
+
+# Node deps for the jsdom report-page tests (tests/test_report_page_queue_js.py)
+tests/js/node_modules/
+!tests/js/package.json
+!tests/js/package-lock.json
