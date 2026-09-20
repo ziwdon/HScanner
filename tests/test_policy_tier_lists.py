@@ -39,20 +39,24 @@ def test_priority_extensions_are_split_into_high_and_medium_only():
     policy = load_default_policy()
     high = {e.lower() for e in policy["buckets"]["upload_candidate"]["high_extensions"]}
     medium = {e.lower() for e in policy["buckets"]["upload_candidate"]["medium_extensions"]}
-    assert high | medium == EXISTING_PRIORITY_EXT
+    assert EXISTING_PRIORITY_EXT <= high | medium
     assert high & medium == set()
 
 
-def test_high_set_contains_only_os_shell_runnable():
+def test_original_high_set_stays_high_except_bin():
+    # Issue #10 demoted .bin to MEDIUM: no OS runs a .bin by type, and real
+    # .bin installers are promoted to HIGH by ELF/shebang content anyway.
     policy = load_default_policy()
     high = {e.lower() for e in policy["buckets"]["upload_candidate"]["high_extensions"]}
-    assert high == HIGH_EXT
+    medium = {e.lower() for e in policy["buckets"]["upload_candidate"]["medium_extensions"]}
+    assert HIGH_EXT - {".bin"} <= high
+    assert ".bin" in medium
 
 
-def test_medium_set_contains_only_runtime_required():
+def test_original_medium_set_stays_medium():
     policy = load_default_policy()
     medium = {e.lower() for e in policy["buckets"]["upload_candidate"]["medium_extensions"]}
-    assert medium == MEDIUM_EXT
+    assert MEDIUM_EXT <= medium
 
 
 def test_legacy_extensions_key_is_absent():

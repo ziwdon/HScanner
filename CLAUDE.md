@@ -7,6 +7,51 @@ Not an antivirus — a triage tool.
 
 ## Status
 
+> **Issue #10: complete extension → tier table; metadata never raises the tier — FIXED (2026-09-20).**
+>
+> **Symptom:** unknown-extension files were promoted to **HIGH** purely by metadata — any file
+> over `large_upload_soft_block_mb` became `suspicious_upload_blocked`/HIGH ("unknown file type
+> exceeds upload size limit", not upload-eligible, so it sat in Needs attention → High with no
+> action), and any file with a mode exec bit became `upload_candidate`/HIGH (FAT/NTFS copies are
+> `0777` en masse). The curated lists had no archive/installer/Office/other-script coverage, so
+> `.zip`, `.nsp`, `.xci`, Unity `.ress` etc. all fell into those fallbacks. The "Lower risk" pill
+> was always empty with the default bypass on. Legacy History reports (pre-2026-08-17, no
+> `risk_tier`) mapped every `upload_candidate` → HIGH.
+> **Fix (Scanner Core, policy-driven):**
+> 1. `default_policy.yaml` now carries a complete extension → tier table: `high_extensions`
+>    (61: OS-shell-runnable/loadable — PE/ELF/Mach-O, installers, shell/batch/PowerShell/WSH,
+>    macOS scripts, shortcuts/autorun/registry), `medium_extensions` (94: interpreter/runtime
+>    required or container that can carry code — Python/Ren'Py/other interpreted, JVM/.NET/WASM
+>    bytecode, `.o .a .bin`, **all archives and disk images**, browser/language packages,
+>    macro-capable **and legacy binary Office** (`.doc .xls .ppt`) + `.chm`, console
+>    packages `.nsp .xci .nca .nro .nds .3ds .cia .gba`, pickles), `hash_only.extensions`
+>    (141: data/config/markup, plain source text, non-macro docs, images/audio/video/subtitles,
+>    fonts, game asset blobs, `.safetensors .gguf .onnx`). Lists are disjoint (tested).
+>    **`.bin` moved HIGH → MEDIUM** (no OS runs it by type; real installers are ELF/shebang
+>    and are promoted by content).
+> 2. `classify_file`: the size-only promotion branch is **deleted** — size only gates upload
+>    eligibility; a listed HIGH/MEDIUM file over the limit is `suspicious_upload_blocked` with
+>    its own tier; an unknown file over the limit stays `hash_only`/LOW_RISK.
+>    `upload_candidate.executable_bit` defaults to **`false`**; the exec-bit rule stays as an
+>    opt-in policy knob (unknown extensions only). Both fallback upload-candidate branches
+>    (exec-bit opt-in, `default_bucket: upload_candidate`) are size-gated like listed types.
+>    ELF/shebang content promotion is unchanged.
+>    New helper `risk_tier_for_extension(ext, policy) -> RiskTier | None`.
+> 3. `report._risk_tier_from_payload`: legacy payloads without `risk_tier` re-derive the tier
+>    from the same table (skipped → SKIPPED; listed HIGH/MEDIUM extension → that tier;
+>    else `elf`/`shebang` → HIGH; else LOW_RISK — mirrors fresh classification, where content
+>    promotion only applies to `hash_only` files) instead of `risk_tier_for_legacy_bucket` (which remains only as the view-layer
+>    fallback in `report_view.group_for_file_view`). Policy is loaded once (`lru_cache`).
+> 4. `report_view`: Needs-attention chips and filter pills render only for tiers that have
+>    files; with bypass on there is simply no "Lower risk" pill. `groups` still lists all three
+>    tiers (JS live-update contract unchanged).
+> **Spec:** `docs/superpowers/specs/2026-06-19-vtscanner-design.md` gained a "Risk tiers and the
+> extension → tier table" subsection, tier rules, and a **Risk tier** column in the Bucket-to-report
+> mapping (local only — `docs/` is gitignored).
+> **Verification:** 716 passing tests (`tests/test_issue10_tier_table.py` is the regression
+> file); Ruff clean; `git diff --check` clean. Previously affected persisted reports render with
+> re-derived tiers immediately; re-scan to refresh buckets/reasons.
+
 > **Report page improvements — IMPLEMENTED (2026-08-17, PR #9).**
 >
 > Five report-page fixes shipped to `main`:
@@ -265,14 +310,18 @@ landed.
 `docs/superpowers/plans/2026-06-22-risk-prioritized-scan.md`). Verified ready-to-merge by the
 final whole-branch review.
 - **Risk tiers:** `RiskTier` enum (HIGH / MEDIUM / LOW_RISK / SKIPPED) set explicitly by
-  the classifier on `Classification.risk_tier` in `src/hscanner/models.py`;
-  `risk_tier_for_classification(cls)` reads the field, `risk_tier_for_legacy_bucket(bucket)`
-  is the worst-case back-compat mapping for v1/v2 reports (UPLOAD_CANDIDATE /
-  SUSPICIOUS_UPLOAD_BLOCKED → HIGH, HASH_ONLY → LOW_RISK, SKIPPED → SKIPPED). HIGH =
-  OS-shell-runnable / native code (`.exe`/`.dll`/`.so`/`.bin`/`.sh`/`.bat`/ …), MEDIUM =
-  runtime/interpreter required (`.py`/`.js`/`.jar`/…), LOW_RISK = data/config/markup/
-  docs/media. The classifier's catch-all fallback honors `matching.default_bucket`
-  (default `hash_only`) so unrecognized data files are LOW_RISK.
+  the classifier on `Classification.risk_tier` in `src/hscanner/models.py` from the complete
+  extension → tier table in `default_policy.yaml` (`risk_tier_for_extension` in
+  `classifier.py` is the table lookup). HIGH = the host OS runs/loads it by type
+  (`.exe`/`.dll`/`.so`/`.msi`/`.deb`/`.sh`/`.bat`/`.ps1`/`.lnk`/…), MEDIUM = interpreter/
+  runtime required or a container that can carry code (`.py`/`.js`/`.jar`/`.bin`/all
+  archives/`.doc`/`.docm`/`.nsp`/…), LOW_RISK = data/config/markup/source text/non-macro
+  docs/media/fonts/game asset blobs. **Metadata never raises the tier**: size only gates
+  upload eligibility; the exec bit is an opt-in policy knob (`executable_bit: false` by
+  default); ELF/shebang *content* promotes to HIGH. The catch-all fallback honors
+  `matching.default_bucket` (default `hash_only`) so unknown extensions are LOW_RISK.
+  Legacy v1/v2 reports re-derive the tier from the table at load time;
+  `risk_tier_for_legacy_bucket(bucket)` is only the view-layer worst-case fallback.
 - **Default-on bypass:** low-risk VT lookups are skipped by default (`bypass_low_risk=True` in
   policy); only HIGH + MEDIUM-tier files are queried in folder scans, cutting quota use. CLI flag
   `--no-bypass` re-enables low-risk lookups.
@@ -410,13 +459,13 @@ spec change and the user's sign-off:
 The spec defines several interlocking taxonomies — keep them aligned when editing either side:
 
 - Classification buckets → Risk tiers → Risk labels → Report categories: see the **Bucket
-  to report mapping** table in the spec. Changing one column means updating the table.
-  Risk tiers are `HIGH` / `MEDIUM` / `LOW_RISK` / `SKIPPED` (set explicitly by the
-  classifier at classify-time on `Classification.risk_tier`; persisted on
-  `ReportFile.risk_tier`; `risk_tier_for_legacy_bucket` is the worst-case back-compat
-  mapping for v1/v2 reports). The classifier's catch-all fallback honors
-  `matching.default_bucket` (default `hash_only`); unknown data files (.json/.xml/.csv…)
-  route to `LOW_RISK` rather than being promoted to a priority tier.
+  to report mapping** table in the spec (now with a Risk tier column). Changing one column
+  means updating the table. Risk tiers are `HIGH` / `MEDIUM` / `LOW_RISK` / `SKIPPED`, set
+  at classify-time from the extension → tier table (`high_extensions` /
+  `medium_extensions` / `hash_only.extensions` / `skipped.extensions` — keep them disjoint;
+  a new extension goes in exactly one list) and persisted on `ReportFile.risk_tier`. Size
+  and the exec bit never raise the tier; only ELF/shebang content does. Unknown extensions
+  fall back to `matching.default_bucket` (default `hash_only` → `LOW_RISK`).
 - Error statuses, CLI exit codes (with deterministic precedence), and the engine quota model
   are all enumerated in the spec — extend the tables there rather than inventing ad-hoc codes.
 

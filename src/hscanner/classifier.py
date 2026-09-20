@@ -100,40 +100,56 @@ def classify_file(record: FileRecord, policy: dict[str, Any]) -> Classification:
             risk_tier=RiskTier.LOW_RISK,
         )
 
-    # Executable bit on a truly unknown extension → HIGH (worst-case).
+    # Fallback upload-candidate branches (both off in the default policy):
+    #  - opt-in ``executable_bit: true``: a mode exec bit on a truly unknown
+    #    extension promotes to HIGH;
+    #  - ``matching.default_bucket: upload_candidate``.
+    # Size alone never raises the tier, but the size limits still gate
+    # upload eligibility for these fallbacks exactly as for listed types.
+    default_bucket = str(policy.get("matching", {}).get("default_bucket", "hash_only")).lower()
     if _has_executable_bit(record, buckets["upload_candidate"]):
+        fallback_reason = buckets["upload_candidate"]["reason"]
+    elif default_bucket == "upload_candidate":
+        fallback_reason = "default fallback upload candidate"
+    else:
         return Classification(
-            bucket=ClassificationBucket.UPLOAD_CANDIDATE,
-            reason=buckets["upload_candidate"]["reason"],
-            upload_eligible=True,
+            bucket=ClassificationBucket.HASH_ONLY,
+            reason="default fallback hash-only",
+            upload_eligible=False,
             hash_eligible=True,
-            suspicious=True,
-            risk_tier=RiskTier.HIGH,
+            risk_tier=RiskTier.LOW_RISK,
         )
-
     if record.size > soft_limit or record.size > absolute_limit:
         return _suspicious_blocked(
-            "unknown file type exceeds upload size limit",
+            f"{fallback_reason}; file exceeds upload size limit",
             tier=RiskTier.HIGH,
         )
-
-    default_bucket = str(policy.get("matching", {}).get("default_bucket", "hash_only")).lower()
-    if default_bucket == "upload_candidate":
-        return Classification(
-            bucket=ClassificationBucket.UPLOAD_CANDIDATE,
-            reason="default fallback upload candidate",
-            upload_eligible=True,
-            hash_eligible=True,
-            suspicious=True,
-            risk_tier=RiskTier.HIGH,
-        )
     return Classification(
-        bucket=ClassificationBucket.HASH_ONLY,
-        reason="default fallback hash-only",
-        upload_eligible=False,
+        bucket=ClassificationBucket.UPLOAD_CANDIDATE,
+        reason=fallback_reason,
+        upload_eligible=True,
         hash_eligible=True,
-        risk_tier=RiskTier.LOW_RISK,
+        suspicious=True,
+        risk_tier=RiskTier.HIGH,
     )
+
+
+def risk_tier_for_extension(ext: str, policy: dict[str, Any]) -> RiskTier | None:
+    """Look up an extension (with leading dot, any case) in the policy's
+    extension -> tier table. Returns ``None`` for extensions the table does
+    not know (callers apply the LOW_RISK default fallback)."""
+    ext = ext.lower()
+    buckets = policy["buckets"]
+    if ext in _normalized_extensions(buckets["skipped"].get("extensions", [])):
+        return RiskTier.SKIPPED
+    upload = buckets["upload_candidate"]
+    if ext in _normalized_extensions(upload.get("high_extensions", [])):
+        return RiskTier.HIGH
+    if ext in _normalized_extensions(upload.get("medium_extensions", [])):
+        return RiskTier.MEDIUM
+    if ext in _normalized_extensions(buckets["hash_only"].get("extensions", [])):
+        return RiskTier.LOW_RISK
+    return None
 
 
 def _suspicious_blocked(reason: str, *, tier: RiskTier) -> Classification:
@@ -201,9 +217,9 @@ def _matches_suspicious_block(
 def _rule_tier(rule: dict[str, Any]) -> RiskTier:
     # Default: MEDIUM. The default policy's only suspicious-block rule is
     # the `.pak` + executable_markers rule (treated as MEDIUM attention
-    # because the inner content is unverified). Oversized-anonymous
-    # fallbacks in classify_file set RiskTier.HIGH directly without going
-    # through this helper. Future rules wanting HIGH can set `tier: high`.
+    # because the inner content is unverified). Oversized *listed* files
+    # keep their extension tier in classify_file without going through
+    # this helper. Future rules wanting HIGH can set `tier: high`.
     tier = str(rule.get("tier", "medium")).lower()
     return RiskTier.HIGH if tier == "high" else RiskTier.MEDIUM
 

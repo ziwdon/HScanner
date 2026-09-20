@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 
 from hscanner.classifier import classify_file
@@ -15,7 +16,7 @@ def _record(name: str, size: int = 10, mode: int = 0o100644) -> FileRecord:
 
 def test_high_extension_match_is_high():
     policy = load_default_policy()
-    for name in ("a.exe", "a.dll", "a.so", "a.bin", "a.appimage", "a.deb", "a.rpm",
+    for name in ("a.exe", "a.dll", "a.so", "a.appimage", "a.deb", "a.rpm",
                  "a.msi", "a.run", "a.scr", "a.com", "a.lnk",
                  "a.sh", "a.bash", "a.zsh", "a.bat", "a.cmd", "a.ps1",
                  "a.vbs", "a.wsf"):
@@ -29,19 +30,22 @@ def test_medium_extension_match_is_medium():
     policy = load_default_policy()
     for name in ("a.py", "a.pyc", "a.pyd", "a.rpy", "a.rpym", "a.rpyc",
                  "a.rpymc", "a.rpyb", "a.rpa",
-                 "a.pl", "a.rb", "a.js", "a.jar"):
+                 "a.pl", "a.rb", "a.js", "a.jar",
+                 "a.bin"):  # .bin: no OS opens it by type; ELF magic promotes real installers
         c = classify_file(_record(name), policy)
         assert c.bucket == ClassificationBucket.UPLOAD_CANDIDATE, name
         assert c.risk_tier == RiskTier.MEDIUM, name
         assert c.upload_eligible is True, name
 
 
-def test_executable_bit_on_unknown_extension_is_high():
+def test_executable_bit_on_unknown_extension_is_low_risk_by_default():
+    # Mode bits are metadata, not content: no promotion unless the policy
+    # opts in with ``executable_bit: true`` (issue #10).
     policy = load_default_policy()
     c = classify_file(_record("weird.xyz", mode=0o100755), policy)
-    assert c.bucket == ClassificationBucket.UPLOAD_CANDIDATE
-    assert c.risk_tier == RiskTier.HIGH
-    assert c.upload_eligible is True
+    assert c.bucket == ClassificationBucket.HASH_ONLY
+    assert c.risk_tier == RiskTier.LOW_RISK
+    assert c.upload_eligible is False
 
 
 def test_sensitive_pattern_wins_and_is_skipped_tier():
@@ -99,11 +103,14 @@ def test_hash_only_extension_with_exec_bit_stays_low_risk():
         assert c.upload_eligible is False, name
 
 
-def test_unknown_extension_with_exec_bit_is_still_high():
-    """A truly unknown extension with the executable bit should still
-    promote to HIGH — the executable_bit rule is a fallback for files
-    we have no other classification for."""
-    policy = load_default_policy()
+def test_unknown_extension_with_exec_bit_is_high_when_policy_opts_in():
+    """With ``executable_bit: true`` the legacy fallback still promotes a
+    truly unknown extension to HIGH; known hash_only extensions are never
+    promoted by the bit either way."""
+    policy = copy.deepcopy(load_default_policy())
+    policy["buckets"]["upload_candidate"]["executable_bit"] = True
     c = classify_file(_record("weird.xyz", mode=0o100755), policy)
     assert c.bucket == ClassificationBucket.UPLOAD_CANDIDATE
     assert c.risk_tier == RiskTier.HIGH
+    known = classify_file(_record("config.ini", mode=0o100755), policy)
+    assert known.risk_tier == RiskTier.LOW_RISK

@@ -113,7 +113,8 @@ def test_needs_attention_section_exposes_risk_chips_and_filters():
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
 
     chips = needs["risk_chips"]
-    assert [c["key"] for c in chips] == ["high", "medium", "low_risk"]
+    # Only populated tiers get a chip/pill (no MEDIUM file in this fixture).
+    assert [c["key"] for c in chips] == ["high", "low_risk"]
     high_chip = next(c for c in chips if c["key"] == "high")
     low_chip = next(c for c in chips if c["key"] == "low_risk")
     assert high_chip["count"] == 2
@@ -121,7 +122,7 @@ def test_needs_attention_section_exposes_risk_chips_and_filters():
     assert all("sev" in c and "label" in c for c in chips)
 
     filters = needs["filters"]
-    assert [f["key"] for f in filters] == ["all", "high", "medium", "low_risk"]
+    assert [f["key"] for f in filters] == ["all", "high", "low_risk"]
     assert filters[0]["pressed"] is True
     assert all(not f["pressed"] for f in filters[1:])
     assert all("label" in f for f in filters)
@@ -282,7 +283,7 @@ def test_needs_attention_filters_and_chips_unchanged_by_subgrouping():
     view = build_report_view(report)
     needs = next(s for s in view["sections"] if s["outcome"] == "needs_attention")
     # risk_chips and filters remain tier-only; no per-extension filter entries leaked
-    assert [c["key"] for c in needs["risk_chips"]] == ["high", "medium", "low_risk"]
-    assert [f["key"] for f in needs["filters"]] == ["all", "high", "medium", "low_risk"]
+    assert [c["key"] for c in needs["risk_chips"]] == ["high", "low_risk"]
+    assert [f["key"] for f in needs["filters"]] == ["all", "high", "low_risk"]
     assert needs["filters"][0]["pressed"] is True
     assert all(not f["pressed"] for f in needs["filters"][1:])

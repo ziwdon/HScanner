@@ -4,10 +4,12 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from hscanner.budget import QuotaStopReason, RequestMetrics
+from hscanner.classifier import risk_tier_for_extension
 from hscanner.models import (
     ClassificationBucket,
     EngineState,
@@ -17,11 +19,12 @@ from hscanner.models import (
     ReportAction,
     ReportCategory,
     RiskLabel,
+    RiskTier,
     ScanOutcome,
     ScanStatus,
     UploadStatus,
-    risk_tier_for_legacy_bucket,
 )
+from hscanner.policy.loader import load_default_policy
 
 
 def classify_report_result(result: FileResult) -> FileResult:
@@ -492,15 +495,34 @@ def _risk_label_from_payload(file: dict[str, Any]) -> str:
     return RiskLabel.UNKNOWN.value
 
 
+@lru_cache(maxsize=1)
+def _legacy_tier_policy() -> dict[str, Any]:
+    # Loaded once; legacy reports can hold thousands of files.
+    return load_default_policy()
+
+
 def _risk_tier_from_payload(file: dict[str, Any]) -> str:
-    """Restore ``ReportFile.risk_tier`` from a payload, using the legacy
-    bucket mapping when the field is absent (persisted v1/v2 reports
-    predate the HIGH/MEDIUM split)."""
+    """Restore ``ReportFile.risk_tier`` from a payload. Persisted v1/v2
+    reports predate the field; for those, re-derive the tier from the same
+    extension table fresh scans use (content signals win), instead of the
+    worst-case bucket mapping that put every legacy upload candidate under
+    HIGH (issue #10)."""
     raw = str(file.get("risk_tier") or "")
     if raw:
         return raw
     bucket = ClassificationBucket(str(file.get("classification_bucket", "hash_only")))
-    return risk_tier_for_legacy_bucket(bucket).value
+    if bucket == ClassificationBucket.SKIPPED or file.get("outcome") == ScanOutcome.SKIPPED.value:
+        return RiskTier.SKIPPED.value
+    # Mirror fresh classification: a listed HIGH/MEDIUM extension keeps its
+    # table tier (content promotion only ever applies to hash_only files);
+    # otherwise ELF/shebang content wins over LOW_RISK/unknown.
+    ext = PurePosixPath(str(file.get("relative_path") or "")).suffix
+    tier = risk_tier_for_extension(ext, _legacy_tier_policy()) if ext else None
+    if tier in {RiskTier.HIGH, RiskTier.MEDIUM}:
+        return tier.value
+    if file.get("elf") or file.get("shebang"):
+        return RiskTier.HIGH.value
+    return RiskTier.LOW_RISK.value
 
 
 def _action_from_payload(file: dict[str, Any]) -> str:

@@ -510,7 +510,7 @@ def test_report_view_renders_needs_attention_groups_and_filters(tmp_path):
     assert 'class="filter-pills"' in body
     assert 'data-filter="all"' in body
     assert 'data-filter="high"' in body
-    assert 'data-filter="medium"' in body
+    assert 'data-filter="medium"' not in body  # no MEDIUM file → no pill (issue #10)
     assert 'data-filter="low_risk"' in body
 
 

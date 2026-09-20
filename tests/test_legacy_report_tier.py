@@ -65,10 +65,15 @@ def test_report_payload_roundtrips_risk_tier():
     assert restored.risk_tier == "medium"
 
 
-def test_legacy_payload_without_risk_tier_maps_to_high_for_upload_candidate():
-    payload = dict(_LEGACY_PAYLOAD_SKELETON)
-    rf = _report_file_from_payload(payload)
-    assert rf.risk_tier == "high"
+def test_legacy_payload_without_risk_tier_rederives_tier_from_extension():
+    # Legacy upload candidates are no longer blanket-HIGH: the tier comes
+    # from the extension table (issue #10).
+    payload = dict(_LEGACY_PAYLOAD_SKELETON, relative_path="tool.exe")
+    assert _report_file_from_payload(payload).risk_tier == "high"
+    payload = dict(_LEGACY_PAYLOAD_SKELETON, relative_path="tool.py")
+    assert _report_file_from_payload(payload).risk_tier == "medium"
+    payload = dict(_LEGACY_PAYLOAD_SKELETON, relative_path="tool")  # exec-bit era, no ext
+    assert _report_file_from_payload(payload).risk_tier == "low_risk"
 
 
 def test_legacy_payload_without_risk_tier_maps_to_low_risk_for_hash_only():
